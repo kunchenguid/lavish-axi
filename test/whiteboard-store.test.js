@@ -8,8 +8,10 @@ import {
   decodePngDataUrl,
   isValidDiagramIndex,
   isValidWhiteboardKey,
+  isValidWhiteboardRef,
   loadWhiteboard,
   saveWhiteboard,
+  SKETCH_WHITEBOARD_REF,
   whiteboardFeedbackPaths,
   writeWhiteboardFeedbackFiles,
 } from "../src/whiteboard-store.js";
@@ -133,4 +135,17 @@ test("decodePngDataUrl only accepts base64 PNG data URLs", () => {
   assert.equal(decodePngDataUrl("data:image/jpeg;base64,abcd"), null);
   assert.equal(decodePngDataUrl("not-a-data-url"), null);
   assert.equal(decodePngDataUrl(null), null);
+});
+
+test("the sketch layer persists as its own scene beside the diagram scenes", async () => {
+  await withTempDir(async (dir) => {
+    const sketch = { elements: [{ id: "pen", type: "freedraw" }], files: {} };
+    await saveWhiteboard(dir, KEY, 0, { sourceHash: "h0", scene: { elements: [{ id: "A" }] } });
+    await saveWhiteboard(dir, KEY, SKETCH_WHITEBOARD_REF, { sourceHash: "", scene: sketch });
+    assert.deepEqual((await loadWhiteboard(dir, KEY, SKETCH_WHITEBOARD_REF)).scene, sketch);
+    assert.deepEqual((await loadWhiteboard(dir, KEY, 0)).scene, { elements: [{ id: "A" }] });
+    assert.equal(isValidWhiteboardRef(SKETCH_WHITEBOARD_REF), true);
+    assert.equal(isValidWhiteboardRef("sketch/../0"), false);
+    await assert.rejects(() => saveWhiteboard(dir, KEY, "sketches", { sourceHash: "", scene: null }), /invalid/);
+  });
 });

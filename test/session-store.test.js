@@ -148,6 +148,46 @@ test("queued mermaid node prompts preserve node identity and drop unknown fields
   }
 });
 
+test("queued sketch comments normalize the sketch target to its fixed shape", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<button>Choose Business</button>");
+    const store = new SessionStore(path.join(dir, "state.json"));
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+
+    await store.queuePrompts(session.key, {
+      prompts: [
+        {
+          uid: "1",
+          prompt: "Make this the primary plan",
+          selector: "button",
+          tag: "sketch",
+          text: "rectangle",
+          target: {
+            type: "sketch",
+            sketchIds: ["r1"],
+            label: "rectangle",
+            bounds: { x: "690", y: 430, width: 180, height: 65 },
+            scene: { elements: ["should not survive"] },
+          },
+        },
+      ],
+    });
+
+    const result = feedbackResult(await store.takeFeedback(session.key));
+    assert.equal(result.prompts[0].tag, "sketch");
+    assert.deepEqual(result.prompts[0].target, {
+      type: "sketch",
+      sketchIds: ["r1"],
+      label: "rectangle",
+      bounds: { x: 690, y: 430, width: 180, height: 65 },
+    });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("queued whiteboard prompts normalize the excalidraw-scene target to its fixed shape", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
   try {

@@ -665,7 +665,7 @@ test("artifact SDK registers a capture-phase document keydown listener for the m
   const js = createSdkJs("abc");
 
   assert.match(js, /const MODE_TOGGLE_HOTKEY_KEY="i"/);
-  assert.match(js, /function isModeToggleHotkeyEvent\(event\)/);
+  assert.match(js, /function isModeToggleHotkeyEvent\(event(?:, key = MODE_TOGGLE_HOTKEY_KEY)?\)/);
   assert.match(js, /if \(!isModeToggleHotkeyEvent\(event\)\) return;/);
   assert.match(js, /function postArtifactMessage\(type,\s*payload\s*=\s*\{\}\)/);
   assert.match(js, /postArtifactMessage\("lavish:toggleAnnotationMode"\)/);
@@ -685,7 +685,7 @@ test("chrome client toggles annotation mode via Cmd/Ctrl+I and on request from t
     /const MODE_TOGGLE_HOTKEY_KEY = String\(sessionData\.modeToggleHotkeyKey \|\| ""\)\.toLowerCase\(\);/,
   );
   assert.doesNotMatch(js, /const MODE_TOGGLE_HOTKEY_KEY = "i";/);
-  assert.match(js, /function isModeToggleHotkeyEvent\(event\)/);
+  assert.match(js, /function isModeToggleHotkeyEvent\(event(?:, key = MODE_TOGGLE_HOTKEY_KEY)?\)/);
   assert.match(js, /function toggleAnnotationMode\(\)/);
   assert.match(js, /annotationSwitch\.onclick = toggleAnnotationMode;/);
   assert.match(js, /if \(msg\.type === "lavish:toggleAnnotationMode"\) toggleAnnotationMode\(\);/);
@@ -700,6 +700,30 @@ test("the annotate switch exposes the mode toggle hotkey as a discoverable toolt
 
   assert.match(html, /"modeToggleHotkeyKey":"i"/);
   assert.match(html, /id="annotation"[^>]*title="Toggle annotate\/explore mode \(⌘I \/ Ctrl\+I\)"/);
+});
+
+test("artifact SDK and sketch layer forward Cmd/Ctrl+; to the chrome", async () => {
+  const sdk = createSdkJs("abc");
+  assert.match(sdk, /const SKETCH_TOGGLE_HOTKEY_KEY=";"/);
+  assert.match(
+    sdk,
+    /document\.addEventListener\(\s*"keydown",\s*\(event\) => \{\s*if \(!isModeToggleHotkeyEvent\(event, SKETCH_TOGGLE_HOTKEY_KEY\)\) return;\s*event\.preventDefault\(\);\s*postArtifactMessage\("lavish:toggleSketchMode"\);\s*\},\s*true,?\s*\);/,
+  );
+
+  const sketch = await readFile(new URL("../src/sketch-frame.js", import.meta.url), "utf8");
+  assert.match(sketch, /isModeToggleHotkeyEvent\(event, SKETCH_TOGGLE_HOTKEY_KEY\)/);
+  assert.match(sketch, /post\(\{ type: "lavish-sketch:toggleSketchMode" \}\)/);
+});
+
+test("the sketch switch exposes the sketch toggle hotkey as a discoverable tooltip", () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+
+  assert.match(html, /"sketchToggleHotkeyKey":";"/);
+  assert.match(
+    html,
+    /id="sketchSwitch"[^>]*title="Draw on the page, then select a sketch to comment on it \(⌘; \/ Ctrl\+;\)"/,
+  );
+  assert.match(html, /id="sketchSwitch"[^>]*aria-keyshortcuts="Meta\+; Control\+;"/);
 });
 
 test("artifact SDK lets marked feedback controls handle their own clicks", () => {

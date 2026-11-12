@@ -1104,10 +1104,36 @@ body.lavish {
   grid-template-columns: minmax(0, 1fr) var(--panel-w);
 }
 .frame {
+  position: relative;
   min-width: 0;
   min-height: 0;
   background: #fff;
   overflow: hidden;
+}
+/* The sketch layer covers the artifact exactly. Outside sketch mode it shows the sketches but
+   lets every pointer event through to the artifact. */
+.frame iframe.sketch-layer {
+  position: absolute;
+  /* An iframe is a replaced element, so `inset` alone keeps its 300x150 default size. The
+     offsets match the phone layout's safe-area padding around the artifact; zero elsewhere. */
+  top: 0;
+  left: env(safe-area-inset-left, 0px);
+  width: calc(100% - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px));
+  height: 100%;
+  background: transparent;
+  /* The chrome is `color-scheme: dark` and the frame document is light. A mismatch makes the
+     browser paint an opaque backdrop behind the frame, which would hide the artifact. */
+  color-scheme: light;
+  pointer-events: none;
+}
+body.sketch-active .frame iframe.sketch-layer {
+  pointer-events: auto;
+}
+.frame iframe.sketch-layer[hidden] {
+  display: none;
+}
+.frame iframe.sketch-layer:not(.sketch-ready) {
+  visibility: hidden;
 }
 .panel {
   width: var(--panel-w);

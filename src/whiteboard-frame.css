@@ -247,3 +247,139 @@ body[data-lavish-whiteboard-theme="dark"] #wbFullscreen:hover,
 .wb-activate:focus-visible .wb-activate-label {
   opacity: 1;
 }
+
+/* Sketch layer (?sketch=1): a transparent editor over the artifact. The chrome passes pointer
+   events through to the artifact outside sketch mode, and Excalidraw's own UI is hidden then. */
+body[data-lavish-sketch="true"] {
+  background: transparent;
+  overflow: hidden;
+}
+
+#skEditor,
+.sk-root {
+  position: fixed;
+  inset: 0;
+}
+
+body[data-lavish-sketch="true"] .excalidraw,
+body[data-lavish-sketch="true"] .excalidraw .excalidraw-container {
+  background: transparent;
+}
+
+body[data-sketch-active="false"] .excalidraw .layer-ui__wrapper,
+body[data-sketch-active="false"] .excalidraw .App-bottom-bar,
+body[data-sketch-active="false"] .excalidraw .App-mobile-menu {
+  display: none;
+}
+
+.sk-anchor {
+  position: fixed;
+  z-index: 10;
+  font-family:
+    Geist,
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    sans-serif;
+}
+
+.sk-comment,
+.sk-card button {
+  border: 0;
+  border-radius: 10px;
+  padding: 8px 12px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.sk-comment,
+.sk-card .sk-queue {
+  background: #f4c95d;
+  color: #17130a;
+}
+
+.sk-comment {
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.28);
+}
+
+.sk-comment:hover,
+.sk-card .sk-queue:hover {
+  background: #ffd877;
+}
+
+.sk-card {
+  width: min(320px, calc(100vw - 24px));
+  box-sizing: border-box;
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px solid #f4c95d;
+  background: #11141a;
+  color: #f7f3ea;
+  box-shadow: 0 20px 70px rgba(0, 0, 0, 0.35);
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.sk-heading {
+  font-weight: 700;
+  margin-bottom: 6px;
+  overflow-wrap: anywhere;
+}
+
+.sk-card textarea {
+  width: 100%;
+  min-height: 86px;
+  box-sizing: border-box;
+  resize: vertical;
+  border-radius: 10px;
+  border: 1px solid #303745;
+  background: #0f1115;
+  color: #f7f3ea;
+  padding: 9px;
+  font: inherit;
+}
+
+.sk-card textarea::placeholder {
+  color: #aeb6c6;
+}
+
+.sk-hint {
+  margin-top: 6px;
+  font-size: 11px;
+  color: #aeb6c6;
+}
+
+.sk-error {
+  color: #ff9d7a;
+  font-weight: 700;
+}
+
+.sk-row {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+
+.sk-card .sk-cancel {
+  background: #2a2f3a;
+  color: #f7f3ea;
+}
+
+.sk-card .sk-queue:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* The sketch layer has no library: the agent never reads library refs from it. */
+body[data-lavish-sketch="true"] .excalidraw .default-sidebar-trigger {
+  display: none;
+}
+
+/* The sketch layer keeps zoom at 1 so a sketch stays on the page content it marks. */
+body[data-lavish-sketch="true"] .excalidraw .zoom-actions {
+  display: none;
+}

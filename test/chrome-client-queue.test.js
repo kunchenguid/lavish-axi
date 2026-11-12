@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
 
+import { SKETCH_COMMENT_MAX_CHARS } from "../src/artifact-sdk.js";
 import { chatEntryForPrompt } from "../src/chat-messages.js";
 import { createChromeHtml } from "../src/server.js";
 
@@ -19,12 +20,14 @@ const servedChromeIds = new Set(
 
 const SERVED_TAB_ICON = "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'/>";
 
-/** @typedef {{ key: string, file: string, layoutGateEnabled?: boolean, layoutGateMaxHoldMs?: number, modeToggleHotkeyKey?: string, initialChat?: any[], initialChatAckIds?: string[], initialChatRevision?: number, initialLayoutWarnings?: any[], chromeLoadToken?: string, initialArtifactRevision?: number, initialArtifactLoadToken?: string, initialArtifactLoadSequence?: number, attachmentMaxBytes?: number, attachmentMaxCount?: number, attachmentAcceptedMime?: string[], initialEnded?: boolean, initialEndedBy?: string | null, revisionPalette?: { hex: string, borderStyle: string, pattern: string }[] }} HarnessSessionData */
+/** @typedef {{ key: string, file: string, layoutGateEnabled?: boolean, layoutGateMaxHoldMs?: number, modeToggleHotkeyKey?: string, sketchToggleHotkeyKey?: string, sketchCommentMaxChars?: number, initialChat?: any[], initialChatAckIds?: string[], initialChatRevision?: number, initialLayoutWarnings?: any[], chromeLoadToken?: string, initialArtifactRevision?: number, initialArtifactLoadToken?: string, initialArtifactLoadSequence?: number, attachmentMaxBytes?: number, attachmentMaxCount?: number, attachmentAcceptedMime?: string[], initialEnded?: boolean, initialEndedBy?: string | null, revisionPalette?: { hex: string, borderStyle: string, pattern: string }[] }} HarnessSessionData */
 /** @type {HarnessSessionData} */
 const defaultSessionData = {
   key: "abc",
   file: "/tmp/artifact.html",
   modeToggleHotkeyKey: "i",
+  sketchToggleHotkeyKey: ";",
+  sketchCommentMaxChars: SKETCH_COMMENT_MAX_CHARS,
   attachmentAcceptedMime: ["image/png", "image/jpeg", "image/webp"],
 };
 
@@ -4746,6 +4749,73 @@ test("an outdated chrome shows a dismissible banner and never reloads itself", a
   assert.equal(chrome.reloadCount(), 1);
 });
 
+test("check and reload waits for the sketch layer to save and stays open when it cannot", async () => {
+  const chrome = await createChromeHarness();
+  const sketchFrame = chrome.element("sketchFrame");
+  sketchFrame.hidden = true;
+  const posted = [];
+  sketchFrame.contentWindow = { postMessage: (message) => posted.push(message) };
+  const sketch = { source: sketchFrame.contentWindow };
+  chrome.element("sketchSwitch").onclick();
+  chrome.sendInlineWhiteboardMessage(sketch, { type: "lavish-sketch:ready", channelToken: "tok" });
+  await flushPromises();
+  const flushAnswer = async (ok) => {
+    const flush = posted.findLast((message) => message.type === "lavish-whiteboard:flush");
+    chrome.sendInlineWhiteboardMessage(sketch, {
+      type: "lavish-whiteboard:flushComplete",
+      channelId: "tok",
+      flushId: flush.flushId,
+      ok,
+    });
+    await flushPromises();
+  };
+
+  sendChromeOutdated(chrome, "upgrade");
+  chrome.element("outdatedReload").click();
+  await flushPromises();
+  assert.equal(chrome.reloadCount(), 0, "the reload waits for the sketch save");
+  await flushAnswer(false);
+  assert.equal(chrome.reloadCount(), 0, "a failed sketch save keeps the page");
+  assert.match(chrome.element("outdatedText").textContent, /could not save your sketches/);
+  assert.equal(chrome.element("outdatedReload").disabled, false);
+
+  chrome.element("outdatedReload").click();
+  await flushPromises();
+  await flushAnswer(true);
+  assert.equal(chrome.reloadCount(), 1);
+});
+
+test("check and reload keeps the page open while a sketch comment is unsent", async () => {
+  const chrome = await createChromeHarness();
+  const sketchFrame = chrome.element("sketchFrame");
+  const posted = [];
+  sketchFrame.contentWindow = { postMessage: (message) => posted.push(message) };
+  const sketch = { source: sketchFrame.contentWindow };
+  chrome.element("sketchSwitch").onclick();
+  chrome.sendInlineWhiteboardMessage(sketch, { type: "lavish-sketch:ready", channelToken: "tok" });
+  await flushPromises();
+  chrome.sendInlineWhiteboardMessage(sketch, {
+    type: "lavish-sketch:draft",
+    channelId: "tok",
+    draft: true,
+    commentDraft: true,
+  });
+
+  sendChromeOutdated(chrome, "upgrade");
+  chrome.element("outdatedReload").click();
+  await flushPromises();
+  const flush = posted.findLast((message) => message.type === "lavish-whiteboard:flush");
+  chrome.sendInlineWhiteboardMessage(sketch, {
+    type: "lavish-whiteboard:flushComplete",
+    channelId: "tok",
+    flushId: flush.flushId,
+    ok: true,
+  });
+  await flushPromises();
+  assert.equal(chrome.reloadCount(), 0, "saved drawings do not release an unsent comment");
+  assert.match(chrome.element("outdatedText").textContent, /sketch comment is not queued yet/);
+});
+
 // Every sentence has to be true in the case it is shown: a deliberate stop is not an update, and
 // a server that never said why was neither.
 test("the outdated banner says what actually happened to the server", async () => {
@@ -5286,7 +5356,7 @@ test("an unrestorable report for a different anchor leaves the stored draft alon
 // interruption is still theirs to choose.
 // The banner this page shows comes from the same shutdown its sibling tabs were told about, so it
 // has to name the same cause - and name none when the event named none.
-async function restartWithUnsentDraft(reason) {
+async function restartWithUnsentDraft(reason, makeDraft) {
   let healthy = false;
   const chrome = await createChromeHarness({
     artifactSrc: "/artifact/abc/index.html",
@@ -5300,11 +5370,15 @@ async function restartWithUnsentDraft(reason) {
     },
   });
 
-  chrome.sendFrameMessage({
-    artifact_load_token: chrome.artifactLoadToken(),
-    type: "lavish:reviewState",
-    state: { card: { selector: "#hero", text: "needs a shorter headline" }, fields: [] },
-  });
+  if (makeDraft) {
+    await makeDraft(chrome);
+  } else {
+    chrome.sendFrameMessage({
+      artifact_load_token: chrome.artifactLoadToken(),
+      type: "lavish:reviewState",
+      state: { card: { selector: "#hero", text: "needs a shorter headline" }, fields: [] },
+    });
+  }
   await flushPromises();
 
   chrome.eventSource().listeners.get("chrome-reload")({
@@ -5346,6 +5420,22 @@ test("the banner a held-back reload shows names the reason the shutdown gave", a
   assert.match(unnamedCopy, /no longer running/);
   assert.doesNotMatch(unnamedCopy, /updated/);
   assert.doesNotMatch(unnamedCopy, /local build/);
+});
+
+test("an unsent sketch comment holds back a restart reload like an annotation draft", async () => {
+  const chrome = await restartWithUnsentDraft("upgrade", async (harness) => {
+    const sketchFrame = harness.element("sketchFrame");
+    sketchFrame.hidden = true;
+    sketchFrame.contentWindow = { postMessage() {} };
+    const sketch = { source: sketchFrame.contentWindow };
+    harness.element("sketchSwitch").onclick();
+    harness.sendInlineWhiteboardMessage(sketch, { type: "lavish-sketch:ready", channelToken: "tok" });
+    await flushPromises();
+    harness.sendInlineWhiteboardMessage(sketch, { type: "lavish-sketch:draft", channelId: "tok", draft: true });
+  });
+
+  assert.equal(chrome.reloadCount(), 0);
+  assert.equal(chrome.element("outdatedBanner").hidden, false);
 });
 
 // A full page reload used to destroy an annotation draft: the chrome kept it in memory only,
@@ -7488,6 +7578,13 @@ test("the chrome's queued anchor agrees with the server's transcript anchor for 
     },
     {
       prompt: "note",
+      selector: "section > button",
+      tag: "sketch",
+      text: "rectangle",
+      target: { type: "sketch", sketchIds: ["r1"], label: "rectangle", bounds: {} },
+    },
+    {
+      prompt: "note",
       selector: "",
       tag: "layout-warnings",
       text: "2 layout issues",
@@ -9158,6 +9255,488 @@ test("whiteboard init flags libraries that changed between the libraries and sou
   });
   assert.equal(failed.librariesUnavailable, true);
   assert.equal(JSON.stringify(failed.libraries), "[]");
+});
+
+test("a comment on a selected sketch queues a sketch-anchored prompt with its PNG and the element it marks", async () => {
+  const requests = [];
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url, init) => {
+      requests.push({ url: String(url), method: init?.method || "GET" });
+      if (String(url).includes("/whiteboard-channel")) return { ok: true, json: async () => ({}) };
+      if (String(url).endsWith("/whiteboard/sketch")) return { ok: true, json: async () => ({ whiteboard: null }) };
+      if (String(url).endsWith("/attachments")) {
+        return { ok: true, json: async () => ({ attachment: { id: "b".repeat(64) + ".png" } }) };
+      }
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+  const sketchFrame = chrome.element("sketchFrame");
+  // The served page declares the layer hidden; it loads only on demand.
+  sketchFrame.hidden = true;
+  const posted = [];
+  sketchFrame.contentWindow = { postMessage: (message) => posted.push(message) };
+  const sketch = { source: sketchFrame.contentWindow };
+
+  chrome.element("sketchSwitch").onclick();
+  assert.equal(chrome.element("sketchSwitch")["aria-pressed"], "true");
+  assert.match(sketchFrame.src, /^\/whiteboard-frame\?sketch=1&key=abc$/);
+
+  chrome.sendInlineWhiteboardMessage(sketch, { type: "lavish-sketch:ready", channelToken: "tok" });
+  await flushPromises();
+  const init = posted.find((message) => message.type === "lavish-sketch:init");
+  assert.equal(init.channelId, "tok");
+  assert.equal(init.active, true);
+
+  // A forged comment without the channel is ignored.
+  chrome.sendInlineWhiteboardMessage(sketch, { type: "lavish-sketch:comment", comment: "forged" });
+  chrome.sendInlineWhiteboardMessage(sketch, { type: "lavish-sketch:prepare", channelId: "tok", attemptId: "a1" });
+  chrome.sendInlineWhiteboardMessage(sketch, {
+    type: "lavish-sketch:comment",
+    channelId: "tok",
+    attemptId: "a1",
+    comment: "Make this the primary plan",
+    ids: ["r1"],
+    label: "rectangle",
+    bounds: { x: 690, y: 430, width: 180, height: 65 },
+    point: { x: 780, y: 462 },
+    png: new Uint8Array([137, 80, 78, 71]),
+  });
+  await flushPromises();
+  const hitTest = chrome.postedToFrame.find((message) => message.type === "lavish:sketchHitTest");
+  assert.deepEqual({ x: hitTest.x, y: hitTest.y }, { x: 780, y: 462 });
+  chrome.sendFrameMessage({
+    type: "lavish:sketchHitTestResult",
+    request_id: hitTest.request_id,
+    target: { uid: "4", selector: "section > button", tag: "button", text: "Choose Business" },
+  });
+  await flushPromises();
+
+  assert.deepEqual(publicQueued(chrome), [
+    {
+      uid: "4",
+      prompt:
+        'Make this the primary plan\n\nSketch: rectangle, marking <button> "Choose Business" (section > button). The attached PNG shows the sketch.',
+      selector: "section > button",
+      tag: "sketch",
+      text: "rectangle",
+      target: {
+        type: "sketch",
+        sketchIds: ["r1"],
+        label: "rectangle",
+        bounds: { x: 690, y: 430, width: 180, height: 65 },
+      },
+      attachments: [{ id: "b".repeat(64) + ".png", name: "sketch.png" }],
+    },
+  ]);
+  assert.deepEqual(
+    posted.filter((message) => message.type === "lavish-sketch:commentResult").map(({ ok }) => ok),
+    [true],
+  );
+  assert.match(chrome.element("queuedLog").innerHTML, /<span class="anchor-kind">sketch<\/span>/);
+  assert.equal(requests.filter((request) => request.url.endsWith("/attachments")).length, 1);
+});
+
+test("Send & End waits for a sketch comment whose PNG is still exporting", async () => {
+  const posts = [];
+  const { chrome, send } = await sketchHarness(async (url, init = {}) => {
+    posts.push({ url: String(url), body: String(url).endsWith("/prompts") ? JSON.parse(init.body) : null });
+    if (String(url).endsWith("/attachments")) {
+      return { ok: true, json: async () => ({ attachment: { id: "c".repeat(64) + ".png" } }) };
+    }
+    return { ok: true, json: async () => ({ whiteboard: null }) };
+  });
+  chrome.element("sketchSwitch").onclick();
+  send({ type: "lavish-sketch:ready", channelToken: "tok" });
+  await flushPromises();
+
+  // The frame reserves the preparation, then spends time exporting the PNG.
+  send({ type: "lavish-sketch:prepare", channelId: "tok", attemptId: "a1" });
+  chrome.element("sendAndEnd").click();
+  assert.equal(
+    chrome.postedToFrame.some((message) => message.type === "lavish:requestSnapshot"),
+    false,
+  );
+
+  send({
+    type: "lavish-sketch:comment",
+    channelId: "tok",
+    attemptId: "a1",
+    comment: "Keep this sketch",
+    ids: ["r1"],
+    label: "rectangle",
+    bounds: { x: 1, y: 2, width: 3, height: 4 },
+    point: { x: 2, y: 3 },
+    png: new Uint8Array([137, 80, 78, 71]),
+  });
+  await flushPromises();
+  const hitTest = chrome.postedToFrame.find((message) => message.type === "lavish:sketchHitTest");
+  chrome.sendFrameMessage({ type: "lavish:sketchHitTestResult", request_id: hitTest.request_id, target: null });
+  await flushPromises();
+  await flushPromises();
+  chrome.sendSnapshot("sketch snapshot");
+  await flushPromises();
+
+  const promptPost = posts.find((post) => post.url.endsWith("/prompts"));
+  assert.equal(promptPost.body.endSession, true);
+  assert.deepEqual(
+    promptPost.body.prompts.map((prompt) => prompt.tag),
+    ["sketch"],
+  );
+});
+
+test("a sketch whose PNG export fails releases the reserved feedback preparation", async () => {
+  const { chrome, send } = await sketchHarness(async () => ({ ok: true, json: async () => ({ whiteboard: null }) }));
+  chrome.element("sketchSwitch").onclick();
+  send({ type: "lavish-sketch:ready", channelToken: "tok" });
+  await flushPromises();
+
+  send({ type: "lavish-sketch:prepare", channelId: "tok", attemptId: "a1" });
+  chrome.element("sendAndEnd").click();
+  assert.equal(chrome.element("sendAndEnd").disabled, true);
+  send({ type: "lavish-sketch:release", channelId: "tok", attemptId: "a1" });
+  await flushPromises();
+
+  assert.equal(chrome.element("sendAndEnd").disabled, false);
+});
+
+async function overlappingSketchHarness() {
+  const harness = await sketchHarness(async (url) => {
+    if (String(url).endsWith("/attachments")) {
+      return { ok: true, json: async () => ({ attachment: { id: "d".repeat(64) + ".png" } }) };
+    }
+    return { ok: true, json: async () => ({ whiteboard: null }) };
+  });
+  const { chrome, send } = harness;
+  chrome.element("sketchSwitch").onclick();
+  send({ type: "lavish-sketch:ready", channelToken: "tok" });
+  await flushPromises();
+  send({ type: "lavish-sketch:prepare", channelId: "tok", attemptId: "a1" });
+  send({ type: "lavish-sketch:prepare", channelId: "tok", attemptId: "a2" });
+  const comment = (attemptId) => ({
+    type: "lavish-sketch:comment",
+    channelId: "tok",
+    attemptId,
+    comment: "note " + attemptId,
+    ids: ["r1"],
+    label: "rectangle",
+    bounds: { x: 1, y: 2, width: 3, height: 4 },
+    point: { x: 2, y: 3 },
+    png: new Uint8Array([137, 80, 78, 71]),
+  });
+  const answerHitTests = async () => {
+    await flushPromises();
+    for (const hitTest of chrome.postedToFrame.filter((message) => message.type === "lavish:sketchHitTest")) {
+      chrome.sendFrameMessage({ type: "lavish:sketchHitTestResult", request_id: hitTest.request_id, target: null });
+    }
+    await flushPromises();
+  };
+  const results = () =>
+    harness.posted
+      .filter((message) => message.type === "lavish-sketch:commentResult")
+      .map(({ attemptId, ok }) => [attemptId, ok]);
+  return { ...harness, comment, answerHitTests, results };
+}
+
+test("overlapping sketch comments each queue under their own attempt id, in any order", async () => {
+  const { chrome, send, comment, answerHitTests, results } = await overlappingSketchHarness();
+
+  send(comment("a2"));
+  send(comment("a1"));
+  await answerHitTests();
+
+  assert.deepEqual(results().sort(), [
+    ["a1", true],
+    ["a2", true],
+  ]);
+  assert.equal(publicQueued(chrome).length, 2);
+});
+
+test("releasing one sketch attempt keeps the other attempt's reservation", async () => {
+  const { chrome, send, comment, answerHitTests, results } = await overlappingSketchHarness();
+
+  send({ type: "lavish-sketch:release", channelId: "tok", attemptId: "a1" });
+  chrome.element("sendAndEnd").click();
+  // a2 is still being prepared, so the end waits for it.
+  assert.equal(
+    chrome.postedToFrame.some((message) => message.type === "lavish:requestSnapshot"),
+    false,
+  );
+
+  send(comment("a2"));
+  await answerHitTests();
+
+  assert.deepEqual(results(), [["a2", true]]);
+  assert.equal(publicQueued(chrome).length, 1);
+});
+
+async function sketchHarness(fetchImpl, options = {}) {
+  const chrome = await createChromeHarness({ fetchImpl, ...options });
+  const sketchFrame = chrome.element("sketchFrame");
+  sketchFrame.hidden = true;
+  const posted = [];
+  sketchFrame.contentWindow = { postMessage: (message) => posted.push(message) };
+  const send = (message) => chrome.sendInlineWhiteboardMessage({ source: sketchFrame.contentWindow }, message);
+  return { chrome, sketchFrame, posted, send };
+}
+
+test("a sketch layer whose handshake fails unloads, and the Sketch switch starts it again", async () => {
+  let channelOk = false;
+  const { chrome, sketchFrame, posted, send } = await sketchHarness(async (url) => {
+    if (String(url).includes("/whiteboard-channel")) return { ok: channelOk, json: async () => ({}) };
+    return { ok: true, json: async () => ({ whiteboard: null }) };
+  });
+
+  chrome.element("sketchSwitch").onclick();
+  send({ type: "lavish-sketch:ready", channelToken: "tok-1" });
+  await flushPromises();
+  assert.equal(posted.length, 0);
+  // Sketch mode must not leave a dead frame catching every pointer event over the artifact.
+  assert.equal(sketchFrame.hidden, true);
+  assert.equal(chrome.element("sketchSwitch")["aria-pressed"], "false");
+
+  channelOk = true;
+  chrome.element("sketchSwitch").onclick();
+  assert.match(sketchFrame.src, /^\/whiteboard-frame\?sketch=1&key=abc$/);
+  // A frame that has not finished its handshake stays invisible over the artifact.
+  assert.equal(sketchFrame.classList.contains("sketch-ready"), false);
+  send({ type: "lavish-sketch:ready", channelToken: "tok-2" });
+  await flushPromises();
+  const init = posted.find((message) => message.type === "lavish-sketch:init");
+  assert.equal(init.channelId, "tok-2");
+  assert.equal(init.active, true);
+  assert.equal(sketchFrame.classList.contains("sketch-ready"), true);
+});
+
+test("a sketch layer that never became ready loads again when the Sketch switch is turned on after the wait", async () => {
+  const { chrome, sketchFrame, posted, send } = await sketchHarness(
+    async () => ({ ok: true, json: async () => ({ whiteboard: null }) }),
+    { fakeClock: true },
+  );
+  let loads = 0;
+  let src = "";
+  Object.defineProperty(sketchFrame, "src", {
+    get: () => src,
+    set(value) {
+      src = value;
+      loads += 1;
+    },
+  });
+  const sketchSwitch = chrome.element("sketchSwitch");
+
+  sketchSwitch.onclick();
+  assert.equal(loads, 1);
+  // A load still in flight is never restarted: the bundle is several megabytes.
+  sketchSwitch.onclick();
+  sketchSwitch.onclick();
+  assert.equal(loads, 1);
+
+  // The frame never reported ready (stalled or failed bundle). Turning the switch on again starts a new load
+  // instead of leaving a dead layer until the page is reloaded.
+  chrome.advanceClock(20000);
+  sketchSwitch.onclick();
+  sketchSwitch.onclick();
+  assert.equal(loads, 2);
+  assert.equal(sketchSwitch["aria-pressed"], "true");
+
+  send({ type: "lavish-sketch:ready", channelToken: "tok" });
+  await flushPromises();
+  assert.equal(posted.find((message) => message.type === "lavish-sketch:init").active, true);
+
+  // A layer that is ready is never reloaded.
+  sketchSwitch.onclick();
+  chrome.advanceClock(20000);
+  sketchSwitch.onclick();
+  assert.equal(loads, 2);
+});
+
+test("annotating from sketch mode leaves sketch mode and keeps annotation on", async () => {
+  const { chrome, posted, send } = await sketchHarness(async () => ({
+    ok: true,
+    json: async () => ({ whiteboard: null }),
+  }));
+  const annotate = chrome.element("annotation");
+  const sketchSwitch = chrome.element("sketchSwitch");
+  const modeMessages = () => chrome.postedToFrame.filter((message) => message.type === "lavish:setAnnotationMode");
+  const modesBefore = modeMessages().length;
+  sketchSwitch.onclick();
+  send({ type: "lavish-sketch:ready", channelToken: "tok" });
+  await flushPromises();
+  // Turning sketch mode on leaves the annotation setting alone.
+  assert.equal(modeMessages().length, modesBefore);
+
+  annotate.click();
+  assert.equal(sketchSwitch["aria-pressed"], "false");
+  assert.equal(annotate["aria-pressed"], "true");
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(posted.filter((message) => message.type === "lavish-sketch:setActive").at(-1))),
+    { type: "lavish-sketch:setActive", active: false, channelId: "tok" },
+  );
+
+  // The hotkey relayed from the focused sketch layer does the same, and from annotation off it
+  // turns annotation on.
+  annotate.click();
+  assert.equal(annotate["aria-pressed"], "false");
+  sketchSwitch.onclick();
+  send({ type: "lavish-sketch:toggleAnnotationMode", channelId: "tok" });
+  assert.equal(sketchSwitch["aria-pressed"], "false");
+  assert.equal(annotate["aria-pressed"], "true");
+  assert.equal(chrome.postedToFrame.at(-1).enabled, true);
+
+  // Outside sketch mode the switch still toggles.
+  annotate.click();
+  assert.equal(annotate["aria-pressed"], "false");
+});
+
+test("Cmd/Ctrl+; toggles sketch mode from the chrome, the artifact SDK and the sketch layer", async () => {
+  const { chrome, posted, send } = await sketchHarness(async () => ({
+    ok: true,
+    json: async () => ({ whiteboard: null }),
+  }));
+  const sketchSwitch = chrome.element("sketchSwitch");
+  const annotate = chrome.element("annotation");
+  annotate.click();
+  const annotationBefore = annotate["aria-pressed"];
+
+  const metaEvent = chrome.dispatchDocumentKeydown({ key: ";", metaKey: true });
+  assert.equal(metaEvent.defaultPrevented, true);
+  assert.equal(sketchSwitch["aria-pressed"], "true");
+
+  const ctrlEvent = chrome.dispatchDocumentKeydown({ key: ";", ctrlKey: true });
+  assert.equal(ctrlEvent.defaultPrevented, true);
+  assert.equal(sketchSwitch["aria-pressed"], "false");
+
+  chrome.sendFrameMessage({ type: "lavish:toggleSketchMode" });
+  assert.equal(sketchSwitch["aria-pressed"], "true");
+  send({ type: "lavish-sketch:ready", channelToken: "tok" });
+  await flushPromises();
+  send({ type: "lavish-sketch:toggleSketchMode", channelId: "tok" });
+  assert.equal(sketchSwitch["aria-pressed"], "false");
+  assert.equal(posted.filter((message) => message.type === "lavish-sketch:setActive").at(-1).active, false);
+  send({ type: "lavish-sketch:toggleSketchMode", channelId: "tok" });
+  assert.equal(sketchSwitch["aria-pressed"], "true");
+
+  // The sketch hotkey never touches the annotate switch.
+  assert.equal(annotate["aria-pressed"], annotationBefore);
+});
+
+test("no switch or hotkey leaves sketch mode while the sketch comment card has unsent text", async () => {
+  const { chrome, send } = await sketchHarness(async () => ({ ok: true, json: async () => ({ whiteboard: null }) }));
+  const sketchSwitch = chrome.element("sketchSwitch");
+  const annotate = chrome.element("annotation");
+  sketchSwitch.onclick();
+  send({ type: "lavish-sketch:ready", channelToken: "tok" });
+  await flushPromises();
+  send({ type: "lavish-sketch:draft", channelId: "tok", draft: true, commentDraft: true });
+  const annotationBefore = annotate["aria-pressed"];
+
+  chrome.dispatchDocumentKeydown({ key: ";", metaKey: true });
+  chrome.sendFrameMessage({ type: "lavish:toggleSketchMode" });
+  send({ type: "lavish-sketch:toggleSketchMode", channelId: "tok" });
+  sketchSwitch.onclick();
+  annotate.click();
+  send({ type: "lavish-sketch:toggleAnnotationMode", channelId: "tok" });
+  assert.equal(sketchSwitch["aria-pressed"], "true");
+  assert.equal(annotate["aria-pressed"], annotationBefore);
+
+  // Unsaved strokes alone never block it.
+  send({ type: "lavish-sketch:draft", channelId: "tok", draft: true, commentDraft: false });
+  sketchSwitch.onclick();
+  assert.equal(sketchSwitch["aria-pressed"], "false");
+});
+
+test("a switch or hotkey refused by an unsent sketch comment moves focus to that comment", async () => {
+  const { chrome, sketchFrame, posted, send } = await sketchHarness(async () => ({
+    ok: true,
+    json: async () => ({ whiteboard: null }),
+  }));
+  chrome.element("sketchSwitch").onclick();
+  send({ type: "lavish-sketch:ready", channelToken: "tok" });
+  await flushPromises();
+  send({ type: "lavish-sketch:draft", channelId: "tok", draft: true, commentDraft: true });
+
+  const refusals = [
+    () => chrome.element("sketchSwitch").onclick(),
+    () => chrome.element("annotation").click(),
+    () => chrome.dispatchDocumentKeydown({ key: ";", metaKey: true }),
+    () => chrome.sendFrameMessage({ type: "lavish:toggleAnnotationMode" }),
+    () => send({ type: "lavish-sketch:toggleSketchMode", channelId: "tok" }),
+  ];
+  for (const refuse of refusals) {
+    sketchFrame.focused = false;
+    const before = posted.length;
+    refuse();
+    assert.equal(sketchFrame.focused, true);
+    assert.deepEqual(
+      posted.slice(before).map((message) => message.type),
+      ["lavish-sketch:focusComment"],
+    );
+  }
+});
+
+test("the sketch hotkey ignores plain, shifted and annotate-hotkey keystrokes and an ended session", async () => {
+  const { chrome } = await sketchHarness(async () => ({ ok: true, json: async () => ({ whiteboard: null }) }));
+  const sketchSwitch = chrome.element("sketchSwitch");
+
+  for (const props of [
+    { key: ";" },
+    { key: ";", metaKey: true, shiftKey: true },
+    { key: ";", metaKey: true, altKey: true },
+  ]) {
+    assert.equal(chrome.dispatchDocumentKeydown(props).defaultPrevented, false);
+    assert.notEqual(sketchSwitch["aria-pressed"], "true");
+  }
+  // The annotate hotkey leaves the sketch switch alone.
+  chrome.dispatchDocumentKeydown({ key: "i", metaKey: true });
+  assert.notEqual(sketchSwitch["aria-pressed"], "true");
+
+  chrome.sendFrameMessage({ type: "lavish:endSession" });
+  await flushPromises();
+  chrome.dispatchDocumentKeydown({ key: ";", metaKey: true });
+  chrome.sendFrameMessage({ type: "lavish:toggleSketchMode" });
+  assert.notEqual(sketchSwitch["aria-pressed"], "true");
+});
+
+test("a sketch layer whose saved scene cannot be read never starts with an empty scene", async () => {
+  const { sketchFrame, posted, send } = await sketchHarness(async (url) => {
+    if (String(url).endsWith("/whiteboard/sketch")) return { ok: false, json: async () => ({}) };
+    return { ok: true, json: async () => ({}) };
+  });
+  sketchFrame.hidden = false;
+  send({ type: "lavish-sketch:ready", channelToken: "tok" });
+  await flushPromises();
+  assert.equal(posted.length, 0);
+  assert.equal(sketchFrame.hidden, true);
+});
+
+test("sketch saves are acknowledged by outcome and still land after the review ends", async () => {
+  let putOk = true;
+  const puts = [];
+  const { chrome, posted, send } = await sketchHarness(async (url, init) => {
+    if (String(url).endsWith("/whiteboard/sketch") && init?.method === "PUT") {
+      puts.push(JSON.parse(init.body).scene);
+      return { ok: putOk, json: async () => ({}) };
+    }
+    return { ok: true, json: async () => ({ whiteboard: null }) };
+  });
+  chrome.element("sketchSwitch").onclick();
+  send({ type: "lavish-sketch:ready", channelToken: "tok" });
+  await flushPromises();
+  const results = () => posted.filter((message) => message.type === "lavish-sketch:saveResult").map(({ ok }) => ok);
+
+  putOk = false;
+  send({ type: "lavish-sketch:save", channelId: "tok", scene: { elements: [{ id: "a" }] } });
+  await flushPromises();
+  assert.deepEqual(results(), [false]);
+
+  putOk = true;
+  chrome.eventSource().listeners.get("ended")({ data: JSON.stringify({ ended_by: "user" }) });
+  send({ type: "lavish-sketch:save", channelId: "tok", scene: { elements: [{ id: "b" }] } });
+  await flushPromises();
+  assert.deepEqual(results(), [false, true]);
+  assert.deepEqual(
+    puts.map((scene) => scene.elements[0].id),
+    ["a", "b"],
+  );
 });
 
 // ---- Desktop conversation panel collapse ----
