@@ -2585,7 +2585,8 @@ export function createArtifactSdk(
       queuedAnchorSelectors = new Set(Array.isArray(msg.selectors) ? msg.selectors.map(String) : []);
     }
     if (msg.type === "lavish:annotateElement" && annotationMode) {
-      const target = safeQuerySelector(msg.selector);
+      const queued = queuedAnchorElements.get(msg.selector)?.deref();
+      const target = queued && queued.isConnected !== false ? queued : safeQuerySelector(msg.selector);
       if (target) showAnnotationCard(target);
     }
   });

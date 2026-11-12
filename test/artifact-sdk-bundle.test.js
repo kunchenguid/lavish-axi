@@ -1204,6 +1204,32 @@ test("a queued note follows its element when an identical branch is inserted bef
   assert.equal(message.selector, queued.prompt.selector);
 });
 
+// A note the chrome cannot open (it is Sending) answers the reopen click with
+// `lavish:annotateElement` and the note's stored selector. The fresh card must open on the
+// element the note was queued from, not on the inserted copy that selector now matches first.
+test("a fresh card for a note that cannot open lands on its element, not the copy its selector now names first", () => {
+  const sdk = bootSdk({ structuralQueries: true });
+  sdk.setDocumentQuery((selector) => queryChildChain(sdk.body.parentElement, selector)[0] ?? null);
+  const build = () => {
+    const section = appendTo(sdk.body, createElement("section"));
+    let node = section;
+    for (let depth = 0; depth < 4; depth += 1) node = appendTo(node, createElement("div"));
+    return { section, img: appendTo(node, createElement("img")) };
+  };
+  const original = build().img;
+  sdk.click(original);
+  const queued = sdk.queue("Swap this photo");
+  const copy = build();
+  sdk.body.children.splice(sdk.body.children.indexOf(copy.section), 1);
+  sdk.body.children.unshift(copy.section);
+  assert.equal(queryChildChain(sdk.body.parentElement, queued.prompt.selector)[0], copy.img);
+
+  sdk.sendChromeMessage({ type: "lavish:annotateElement", selector: queued.prompt.selector });
+  const fresh = sdk.queue("Crop this one");
+
+  assert.deepEqual(queryChildChain(sdk.body.parentElement, fresh.prompt.selector), [original]);
+});
+
 // After a reload the frame has no record of which element a note came from, so the note falls
 // back to its selector and the element that selector names reopens it.
 test("after a reload a queued note reopens on the element its selector names", () => {
