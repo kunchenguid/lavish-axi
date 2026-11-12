@@ -1251,36 +1251,6 @@ test("a fresh card for a note that cannot open lands on its element, not the cop
   assert.deepEqual(queryChildChain(sdk.body.parentElement, fresh.prompt.selector), [original]);
 });
 
-// Clicking a Queued bubble reveals the note's element so the reviewer can click it again and
-// reopen the note. With an identical branch inserted before it, the stored selector's first match
-// is the copy, so only the element the note was queued from keeps that promise. A reveal that does
-// not come from a queued note (a layout warning, a revision mark) still resolves its selector.
-test("a Queued bubble's reveal flashes its note's element while any other reveal resolves the selector", () => {
-  const sdk = bootSdk({ structuralQueries: true });
-  sdk.setDocumentQuery((selector) => queryChildChain(sdk.body.parentElement, selector)[0] ?? null);
-  const scrolled = [];
-  const build = (name) => {
-    const section = appendTo(sdk.body, createElement("section"));
-    let node = section;
-    for (let depth = 0; depth < 4; depth += 1) node = appendTo(node, createElement("div"));
-    const img = appendTo(node, createElement("img"));
-    img.scrollIntoView = () => scrolled.push(name);
-    return { section, img };
-  };
-  const original = build("original").img;
-  sdk.click(original);
-  const queued = sdk.queue("Swap this photo");
-  const copy = build("copy");
-  sdk.body.children.splice(sdk.body.children.indexOf(copy.section), 1);
-  sdk.body.children.unshift(copy.section);
-  Object.defineProperty(sdk.Element, Symbol.hasInstance, { value: (value) => Boolean(value?.tagName) });
-
-  sdk.sendChromeMessage({ type: "lavish:revealElement", selector: queued.prompt.selector, queued: true });
-  sdk.sendChromeMessage({ type: "lavish:revealElement", selector: queued.prompt.selector });
-
-  assert.deepEqual(scrolled, ["original", "copy"]);
-});
-
 // After a reload the frame has no record of which element a note came from, so the note falls
 // back to its selector and the element that selector names reopens it.
 test("after a reload a queued note reopens on the element its selector names", () => {
@@ -1297,33 +1267,6 @@ test("after a reload a queued note reopens on the element its selector names", (
   assert.equal(sdk.cards().length, cardsBefore);
   assert.equal(sdk.posted.at(-1).type, "lavish:editQueuedAnchor");
   assert.equal(sdk.posted.at(-1).selector, queued.prompt.selector);
-});
-
-// A Queued bubble's reveal shows the element a click on it would reopen. Once the artifact's own
-// script replaces that element, even with an identical one, a click there opens a fresh card, so
-// the reveal shows nothing. A reveal that does not come from a queued note still resolves its
-// selector to the replacement.
-test("a Queued bubble's reveal shows nothing once its note's element was replaced", () => {
-  const sdk = bootSdk({ structuralQueries: true });
-  sdk.setDocumentQuery((selector) => queryChildChain(sdk.body.parentElement, selector)[0] ?? null);
-  const scrolled = [];
-  const paragraph = appendTo(sdk.body, cell("p", "Just prose"));
-  paragraph.scrollIntoView = () => scrolled.push("original");
-  sdk.click(paragraph);
-  const queued = sdk.queue("Reword this");
-  paragraph.isConnected = false;
-  sdk.body.children.splice(sdk.body.children.indexOf(paragraph), 1);
-  const replacement = appendTo(sdk.body, cell("p", "Just prose"));
-  replacement.scrollIntoView = () => scrolled.push("replacement");
-  Object.defineProperty(sdk.Element, Symbol.hasInstance, { value: (value) => Boolean(value?.tagName) });
-
-  sdk.sendChromeMessage({ type: "lavish:revealElement", selector: queued.prompt.selector, queued: true });
-  assert.deepEqual(scrolled, []);
-  assert.equal(sdk.revealMarkers().length, 0);
-
-  sdk.sendChromeMessage({ type: "lavish:revealElement", selector: queued.prompt.selector });
-  assert.deepEqual(scrolled, ["replacement"]);
-  assert.equal(sdk.revealMarkers().length, 1);
 });
 
 // After a reload the stored selector may be written differently from the selector the page now

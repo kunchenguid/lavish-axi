@@ -835,16 +835,6 @@ export function createArtifactSdk(
     if (selectorText && el && typeof WeakRef === "function") queuedAnchorElements.set(selectorText, new WeakRef(el));
   }
 
-  // The element a click on a queued note's selector reopens: the element it was queued from while
-  // that element is in the page, and nothing once it has left. Only a note this page never saw
-  // queued resolves its selector.
-  function queuedAnchorTarget(selectorText) {
-    const ref = queuedAnchorElements.get(selectorText);
-    if (!ref) return safeQuerySelector(selectorText);
-    const remembered = ref.deref();
-    return remembered && remembered.isConnected !== false ? remembered : null;
-  }
-
   // Which queued note a click reopens, given the clicked element's `context()`. The clicked
   // element's own note wins; a click inside a diagram node then finds the node's note, because
   // the node is one target however deep the click lands. A table cell's note stays on the exact
@@ -2590,12 +2580,13 @@ export function createArtifactSdk(
       window.scrollTo(Number(msg.x) || 0, Number(msg.y) || 0);
     }
     if (msg.type === "lavish:restoreReviewState") restoreReviewState(msg.state);
-    if (msg.type === "lavish:revealElement") revealElement(msg.selector, msg.queued === true);
+    if (msg.type === "lavish:revealElement") revealElement(msg.selector);
     if (msg.type === "lavish:queuedAnchors") {
       queuedAnchorSelectors = new Set(Array.isArray(msg.selectors) ? msg.selectors.map(String) : []);
     }
     if (msg.type === "lavish:annotateElement" && annotationMode) {
-      const target = queuedAnchorTarget(msg.selector) || safeQuerySelector(msg.selector);
+      const queued = queuedAnchorElements.get(msg.selector)?.deref();
+      const target = queued && queued.isConnected !== false ? queued : safeQuerySelector(msg.selector);
       if (target) showAnnotationCard(target);
     }
   });
@@ -2603,9 +2594,8 @@ export function createArtifactSdk(
   // Bring a warning's element into view and flash it. The marker is Lavish UI, so it is excluded
   // from the layout audit and never becomes a finding of its own.
   let stopRevealTracking = () => {};
-  function revealElement(selector, queued = false) {
-    const resolve = queued ? queuedAnchorTarget : safeQuerySelector;
-    const target = selector === "html" ? document.documentElement : resolve(selector);
+  function revealElement(selector) {
+    const target = selector === "html" ? document.documentElement : safeQuerySelector(selector);
     if (!(target instanceof Element)) return;
     target.scrollIntoView({ block: "center", inline: "center", behavior: "smooth" });
     stopRevealTracking();

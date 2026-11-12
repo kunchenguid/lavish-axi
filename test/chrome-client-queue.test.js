@@ -3531,7 +3531,6 @@ test("Reveal asks the artifact iframe to highlight the affected element", async 
   const revealMessage = chrome.postedToFrame.at(-1);
   assert.equal(revealMessage.type, "lavish:revealElement");
   assert.equal(revealMessage.selector, "p#copy");
-  assert.equal(revealMessage.queued, undefined, "a warning's reveal is not a queued note's");
 });
 
 test("the drawer manages focus and closes on Escape", async () => {
@@ -8710,7 +8709,7 @@ test("clicking a queued note opens it for editing and reveals its element", asyn
     JSON.parse(
       JSON.stringify(chrome.postedToFrame.filter((message) => message.type === "lavish:revealElement").at(-1)),
     ),
-    { type: "lavish:revealElement", selector: "main > h2", queued: true },
+    { type: "lavish:revealElement", selector: "main > h2" },
   );
 });
 
