@@ -8806,6 +8806,18 @@ test("the artifact learns which elements carry a queued note, never the note its
   assert.deepEqual(JSON.parse(JSON.stringify(anchors)), { type: "lavish:queuedAnchors", selectors: ["main > h2"] });
 });
 
+// The artifact walks the list newest first, so a selector a newer note carries again must sit at
+// that newer note, after a selector queued in between; otherwise the in-between note would win.
+test("the artifact's queued-anchor list places each selector at its newest note", async () => {
+  const chrome = await createChromeHarness();
+  queueHeadingNote(chrome, "Make this heading bigger", "main > h2");
+  queueHeadingNote(chrome, "Make this heading blue", "main > h2:nth-of-type(2)");
+  queueHeadingNote(chrome, "Make this heading bold", "main > h2");
+
+  const anchors = chrome.postedToFrame.filter((message) => message.type === "lavish:queuedAnchors").at(-1);
+  assert.deepEqual(JSON.parse(JSON.stringify(anchors.selectors)), ["main > h2:nth-of-type(2)", "main > h2"]);
+});
+
 test("clicking an annotated element in the artifact opens its queued note", async () => {
   const chrome = await createChromeHarness();
   queueHeadingNote(chrome, "First thought");

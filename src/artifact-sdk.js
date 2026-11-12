@@ -851,9 +851,11 @@ export function createArtifactSdk(
   // queued in this page matches only the element it was queued from, and stops matching anything
   // once that element leaves the page: whatever now matches its selector is a different element.
   // A note this page never saw queued (the frame reloaded) falls back to its selector: the same
-  // string, or a selector whose only match in the page is `el`.
+  // string, or a selector whose only match in the page is `el`. The chrome lists each selector at
+  // its newest note and opens the newest note carrying it, so the list is walked newest first: an
+  // element whose selector changed between two notes reopens the newer one.
   function queuedAnchorOf(el, freshSelector) {
-    for (const candidate of queuedAnchorSelectors) {
+    for (const candidate of [...queuedAnchorSelectors].reverse()) {
       const ref = queuedAnchorElements.get(candidate);
       if (ref) {
         // A removed element is never the one clicked, so its note matches nothing until a reload.

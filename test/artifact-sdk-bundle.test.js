@@ -1225,6 +1225,29 @@ test("a queued note follows its element when an identical branch is inserted bef
   assert.equal(message.selector, queued.prompt.selector);
 });
 
+// Two notes on one element whose selector changed between them: the chrome lists selectors oldest
+// note first and opens the newest note carrying the selector it gets, so a click must name the
+// newer note's selector, as it did when the click sent the element's fresh selector.
+test("a click reopens the newer of two notes queued on one element whose selector changed", () => {
+  const sdk = bootSdk({ structuralQueries: true });
+  const paragraph = appendTo(sdk.body, cell("p", "Just prose"));
+  sdk.api.queuePrompt("Reword this", { element: paragraph, queueKey: "" });
+  const older = sdk.posted.at(-1).prompt;
+  const inserted = cell("p", "Inserted above");
+  inserted.parentElement = sdk.body;
+  sdk.body.children.unshift(inserted);
+  sdk.api.queuePrompt("Shorten this", { element: paragraph, queueKey: "" });
+  const newer = sdk.posted.at(-1).prompt;
+  assert.notEqual(newer.selector, older.selector);
+  sdk.sendChromeMessage({ type: "lavish:queuedAnchors", selectors: [older.selector, newer.selector] });
+
+  sdk.click(paragraph);
+
+  const message = sdk.posted.at(-1);
+  assert.equal(message.type, "lavish:editQueuedAnchor");
+  assert.equal(message.selector, newer.selector);
+});
+
 // A note the chrome cannot open (it is Sending) answers the reopen click with
 // `lavish:annotateElement` and the note's stored selector. The fresh card must open on the
 // element the note was queued from, not on the inserted copy that selector now matches first.
