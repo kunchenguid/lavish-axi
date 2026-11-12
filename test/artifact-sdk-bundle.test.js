@@ -1284,6 +1284,29 @@ test("after a reload a queued selector that names only the clicked element reope
   assert.equal(sdk.posted.at(-1).selector, "body > p");
 });
 
+// A text note is about the words, so no click reopens it, and it must not take over an element
+// note's selector string either. After a reorder hands that string to another element, a text note
+// queued inside that element would otherwise make a click there reopen the other element's note.
+test("a text note queued inside an element does not make a click there reopen another element's note", () => {
+  const sdk = bootSdk({ structuralQueries: true });
+  const moved = appendTo(sdk.body, cell("p", "First"));
+  const other = appendTo(sdk.body, cell("p", "Second"));
+  sdk.click(moved);
+  const elementNote = sdk.queue("Reword this");
+  sdk.body.children.reverse();
+  sdk.selectText(other, "Second");
+  // The drag-select's own click, which the SDK swallows.
+  sdk.click(other);
+  sdk.queue("Fix this wording");
+  sdk.sendChromeMessage({ type: "lavish:queuedAnchors", selectors: [elementNote.prompt.selector] });
+  const cardsBefore = sdk.cards().length;
+
+  sdk.click(other);
+
+  assert.notEqual(sdk.posted.at(-1)?.type, "lavish:editQueuedAnchor", "the text note reopened another element's note");
+  assert.equal(sdk.cards().length, cardsBefore + 1);
+});
+
 // Once a queued note's element is removed from the page, a different element that
 // now matches its stored selector must not reopen that note; it opens a fresh card instead.
 test("a queued note whose element was removed does not reopen on the element now matching its selector", () => {

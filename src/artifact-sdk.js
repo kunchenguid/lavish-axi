@@ -831,8 +831,9 @@ export function createArtifactSdk(
     return parts.join(" > ");
   }
 
-  function rememberQueuedAnchor(selectorText, el) {
-    if (selectorText && el && typeof WeakRef === "function") queuedAnchorElements.set(selectorText, new WeakRef(el));
+  function rememberQueuedAnchor(note, el) {
+    if (note.target?.type === "text-range") return;
+    if (note.selector && el && typeof WeakRef === "function") queuedAnchorElements.set(note.selector, new WeakRef(el));
   }
 
   // Which queued note a click reopens, given the clicked element's `context()`. The clicked
@@ -1303,7 +1304,7 @@ export function createArtifactSdk(
       if (attachments.length) item.attachments = attachments;
     }
 
-    if (options.element) rememberQueuedAnchor(item.selector, options.element);
+    if (options.element) rememberQueuedAnchor(item, options.element);
     postArtifactMessage("lavish:queuePrompt", { prompt: item });
   }
 
@@ -2489,7 +2490,7 @@ export function createArtifactSdk(
       // refers to), but never queue an empty card.
       if (prompt || readyAttachments.length) {
         queuePrompt(prompt, { ...c, queueKey: "", attachments: readyAttachments });
-        rememberQueuedAnchor(c.selector, target);
+        rememberQueuedAnchor(c, target);
       }
       closeCard();
       return true;
