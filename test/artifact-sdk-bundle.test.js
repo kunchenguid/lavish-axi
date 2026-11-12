@@ -88,8 +88,15 @@ function createElement(tag) {
     click() {},
     scrollIntoView() {},
     attachShadow() {
-      element.shadowRoot = createElement("shadow-root");
-      return element.shadowRoot;
+      const shadowRoot = createElement("shadow-root");
+      // A new Reveal drops the previous marker by querying the shadow root for its class, so that
+      // query answers with the markers actually appended there.
+      shadowRoot.querySelectorAll = (selector) =>
+        selector === ".lavish-reveal-marker"
+          ? shadowRoot.children.filter((child) => child.className === "lavish-reveal-marker")
+          : [];
+      element.shadowRoot = shadowRoot;
+      return shadowRoot;
     },
   };
   return element;
@@ -407,6 +414,7 @@ test("a reveal marker stops tracking once it is removed or replaced", () => {
   const { sdk, scroll } = bootRevealTarget();
   sdk.sendChromeMessage({ type: "lavish:revealElement", selector: "#revised" });
   sdk.sendChromeMessage({ type: "lavish:revealElement", selector: "#revised" });
+  assert.equal(sdk.revealMarkers().length, 1, "a new reveal replaces the previous marker at once");
   const readsBeforeFrame = scroll.reads;
   sdk.runFrames();
   assert.equal(scroll.reads - readsBeforeFrame, 1, "a new reveal stops the previous one's frame loop");
