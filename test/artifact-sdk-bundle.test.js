@@ -1122,6 +1122,27 @@ test("a selector matching no element keeps climbing", () => {
   assert.notEqual(second.prompt.selector, first.prompt.selector);
 });
 
+// In an HTML document a type selector matches an SVG element only in its own case, so a chain
+// through `<foreignObject>` (Mermaid wraps every node label in one) must keep that case to name
+// anything. The stubbed query below answers the way a browser does for the lowercased tag.
+test("a selector through an SVG foreignObject keeps its case and names the clicked element", () => {
+  const sdk = bootSdk({ structuralQueries: true });
+  const svg = appendTo(appendTo(sdk.body, createElement("section")), createElement("svg"));
+  const foreignObject = appendTo(svg, createElement("foreignObject"));
+  foreignObject.localName = "foreignObject";
+  const label = appendTo(
+    appendTo(appendTo(foreignObject, createElement("div")), createElement("p")),
+    createElement("span"),
+  );
+  const query = sdk.document.querySelectorAll;
+  sdk.document.querySelectorAll = (selector) => (String(selector).includes("foreignobject") ? [] : query(selector));
+
+  sdk.click(label);
+  const queued = sdk.queue("Rename this step");
+
+  assert.deepEqual(sdk.document.querySelectorAll(queued.prompt.selector), [label]);
+});
+
 // A queued note made before a structurally identical branch appeared must still
 // reopen when its element is clicked, though that element's fresh selector is now longer.
 test("a queued note reopens after an identical branch is added beside it", () => {
@@ -1276,6 +1297,33 @@ test("after a reload a queued note reopens on the element its selector names", (
   assert.equal(sdk.cards().length, cardsBefore);
   assert.equal(sdk.posted.at(-1).type, "lavish:editQueuedAnchor");
   assert.equal(sdk.posted.at(-1).selector, queued.prompt.selector);
+});
+
+// A Queued bubble's reveal shows the element a click on it would reopen. Once the artifact's own
+// script replaces that element, even with an identical one, a click there opens a fresh card, so
+// the reveal shows nothing. A reveal that does not come from a queued note still resolves its
+// selector to the replacement.
+test("a Queued bubble's reveal shows nothing once its note's element was replaced", () => {
+  const sdk = bootSdk({ structuralQueries: true });
+  sdk.setDocumentQuery((selector) => queryChildChain(sdk.body.parentElement, selector)[0] ?? null);
+  const scrolled = [];
+  const paragraph = appendTo(sdk.body, cell("p", "Just prose"));
+  paragraph.scrollIntoView = () => scrolled.push("original");
+  sdk.click(paragraph);
+  const queued = sdk.queue("Reword this");
+  paragraph.isConnected = false;
+  sdk.body.children.splice(sdk.body.children.indexOf(paragraph), 1);
+  const replacement = appendTo(sdk.body, cell("p", "Just prose"));
+  replacement.scrollIntoView = () => scrolled.push("replacement");
+  Object.defineProperty(sdk.Element, Symbol.hasInstance, { value: (value) => Boolean(value?.tagName) });
+
+  sdk.sendChromeMessage({ type: "lavish:revealElement", selector: queued.prompt.selector, queued: true });
+  assert.deepEqual(scrolled, []);
+  assert.equal(sdk.revealMarkers().length, 0);
+
+  sdk.sendChromeMessage({ type: "lavish:revealElement", selector: queued.prompt.selector });
+  assert.deepEqual(scrolled, ["replacement"]);
+  assert.equal(sdk.revealMarkers().length, 1);
 });
 
 // After a reload the stored selector may be written differently from the selector the page now

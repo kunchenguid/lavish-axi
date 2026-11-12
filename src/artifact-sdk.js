@@ -808,7 +808,7 @@ export function createArtifactSdk(
     const parts = [];
     let node = el;
     while (node && node.nodeType === 1 && (parts.length < 5 || !selectsOnly(parts))) {
-      let part = node.tagName.toLowerCase();
+      let part = node.localName || node.tagName.toLowerCase();
       if (node.id) {
         const idPart = part + "#" + CSS.escape(node.id);
         // Generated pages repeat ids; only an id that names this one element ends the climb.
@@ -835,11 +835,14 @@ export function createArtifactSdk(
     if (selectorText && el && typeof WeakRef === "function") queuedAnchorElements.set(selectorText, new WeakRef(el));
   }
 
-  // The element a queued note's selector stands for: the element it was queued from while that
-  // element is still in the page, otherwise whatever the selector names now.
+  // The element a click on a queued note's selector reopens: the element it was queued from while
+  // that element is in the page, and nothing once it has left. Only a note this page never saw
+  // queued resolves its selector.
   function queuedAnchorTarget(selectorText) {
-    const remembered = queuedAnchorElements.get(selectorText)?.deref();
-    return remembered && remembered.isConnected !== false ? remembered : safeQuerySelector(selectorText);
+    const ref = queuedAnchorElements.get(selectorText);
+    if (!ref) return safeQuerySelector(selectorText);
+    const remembered = ref.deref();
+    return remembered && remembered.isConnected !== false ? remembered : null;
   }
 
   // Which queued note a click reopens, given the clicked element's `context()`. The clicked
@@ -2592,7 +2595,7 @@ export function createArtifactSdk(
       queuedAnchorSelectors = new Set(Array.isArray(msg.selectors) ? msg.selectors.map(String) : []);
     }
     if (msg.type === "lavish:annotateElement" && annotationMode) {
-      const target = queuedAnchorTarget(msg.selector);
+      const target = queuedAnchorTarget(msg.selector) || safeQuerySelector(msg.selector);
       if (target) showAnnotationCard(target);
     }
   });
