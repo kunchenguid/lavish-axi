@@ -2531,21 +2531,46 @@ export function createArtifactSdk(
 
   // Bring a warning's element into view and flash it. The marker is Lavish UI, so it is excluded
   // from the layout audit and never becomes a finding of its own.
+  let stopRevealTracking = () => {};
   function revealElement(selector) {
     const target = selector === "html" ? document.documentElement : safeQuerySelector(selector);
     if (!(target instanceof Element)) return;
     target.scrollIntoView({ block: "center", inline: "center", behavior: "smooth" });
+    stopRevealTracking();
     const root = ensureShadow();
     for (const el of [...root.querySelectorAll(".lavish-reveal-marker")]) el.remove();
-    const rect = target.getBoundingClientRect();
     const marker = document.createElement("div");
     marker.className = "lavish-reveal-marker";
-    marker.style.left = rect.left + "px";
-    marker.style.top = rect.top + "px";
-    marker.style.width = Math.max(rect.width, 4) + "px";
-    marker.style.height = Math.max(rect.height, 4) + "px";
+    // The smooth scroll has only started when scrollIntoView returns, so the rect read now is the
+    // pre-scroll one and the fixed marker would stay there. Re-place the marker on `scrollend`
+    // (captured, so a nested scroll container's counts too) and on every frame while it lives,
+    // which covers browsers without `scrollend`.
+    const place = () => {
+      const rect = target.getBoundingClientRect();
+      marker.style.left = rect.left + "px";
+      marker.style.top = rect.top + "px";
+      marker.style.width = Math.max(rect.width, 4) + "px";
+      marker.style.height = Math.max(rect.height, 4) + "px";
+    };
+    let tracking = true;
+    const follow = () => {
+      if (!tracking) return;
+      place();
+      window.requestAnimationFrame(follow);
+    };
+    const stop = () => {
+      tracking = false;
+      window.removeEventListener("scrollend", place, true);
+    };
+    stopRevealTracking = stop;
+    place();
     root.appendChild(marker);
-    window.setTimeout(() => marker.remove(), 2400);
+    window.addEventListener("scrollend", place, true);
+    window.requestAnimationFrame(follow);
+    window.setTimeout(() => {
+      stop();
+      marker.remove();
+    }, 2400);
   }
 
   // Capture phase so the mode hotkey fires no matter where focus is inside the artifact -

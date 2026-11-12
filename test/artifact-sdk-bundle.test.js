@@ -178,7 +178,10 @@ function bootSdk({
   const windowListeners = [];
   sandbox.window = {
     addEventListener: (type, handler) => windowListeners.push({ type, handler }),
-    removeEventListener() {},
+    removeEventListener: (type, handler) => {
+      const index = windowListeners.findIndex((entry) => entry.type === type && entry.handler === handler);
+      if (index >= 0) windowListeners.splice(index, 1);
+    },
     setTimeout: scheduleTimer,
     clearTimeout: cancelTimer,
     requestAnimationFrame: (fn) => (runAnimationFrames ? scheduleTimer(fn, 0) : 0),
@@ -197,6 +200,10 @@ function bootSdk({
     posted,
     body,
     api: sandbox.window.lavish,
+    // The SDK checks `instanceof Element`, so a stub that must pass that check takes this prototype.
+    asElement(stub) {
+      return Object.setPrototypeOf(stub, sandbox.Element.prototype);
+    },
     // Returns the dispatched event so a test can tell whether the SDK swallowed the click.
     click(target, modifiers = {}) {
       const listener = documentListeners.find((entry) => entry.type === "click");
@@ -260,6 +267,33 @@ function bootSdk({
         }
       }
       assert.fail("the SDK timer queue did not settle");
+    },
+    // Runs only the queued animation frames (the harness schedules them as 0 ms timers), leaving
+    // longer timers such as the reveal marker's removal queued.
+    runFrames() {
+      const pending = timers.filter((timer) => timer.ms === 0 && !timer.ran && !timer.cancelled);
+      for (const timer of pending) {
+        timer.ran = true;
+        timer.fn();
+      }
+    },
+    // Runs the queued timers of exactly `ms` milliseconds.
+    runTimersOf(ms) {
+      for (const timer of timers.filter((entry) => entry.ms === ms && !entry.ran && !entry.cancelled)) {
+        timer.ran = true;
+        timer.fn();
+      }
+    },
+    dispatchWindowEvent(type) {
+      for (const listener of windowListeners.filter((entry) => entry.type === type)) listener.handler({ type });
+    },
+    windowListenerCount(type) {
+      return windowListeners.filter((entry) => entry.type === type).length;
+    },
+    revealMarkers() {
+      return documentElement.children
+        .flatMap((child) => child.shadowRoot?.children || [])
+        .filter((child) => child.className === "lavish-reveal-marker");
     },
     // The chrome is the only legitimate sender, so its messages arrive with `source: parent`.
     sendChromeMessage(data) {
@@ -340,6 +374,65 @@ test("the chrome can turn annotation on and off after a page declares off", () =
   sdk.runTimers();
   const state = sdk.posted.filter((message) => message.type === "lavish:reviewState").at(-1);
   assert.equal(state.state.card, null, "turning annotation off closes the active card");
+});
+
+// Reveal scrolls smoothly, so the target's rect only reaches its final place once the scroll
+// settles. This target reports its pre-scroll rect until the test says the scroll has settled.
+function bootRevealTarget() {
+  const sdk = bootSdk({ runAnimationFrames: true });
+  const scroll = { settled: false, reads: 0 };
+  const target = sdk.asElement(appendTo(sdk.body, cell("section", "Revised block")));
+  const calls = [];
+  target.scrollIntoView = (options) => calls.push(options);
+  target.getBoundingClientRect = () =>
+    ++scroll.reads && scroll.settled
+      ? { left: 40, top: 300, right: 640, bottom: 420, width: 600, height: 120 }
+      : { left: 40, top: 2200, right: 640, bottom: 2320, width: 600, height: 120 };
+  sdk.setDocumentQuery((selector) => (selector === "#revised" ? target : null));
+  return { sdk, scroll, calls };
+}
+
+function assertMarkerAtSettledRect(sdk) {
+  const markers = sdk.revealMarkers();
+  assert.equal(markers.length, 1);
+  assert.deepEqual(
+    { left: markers[0].style.left, top: markers[0].style.top, width: markers[0].style.width },
+    { left: "40px", top: "300px", width: "600px" },
+    "the marker sits on the settled rect, not the pre-scroll one",
+  );
+}
+
+test("reveal keeps the smooth scroll and moves the marker to the target once the scroll ends", () => {
+  const { sdk, scroll, calls } = bootRevealTarget();
+  sdk.sendChromeMessage({ type: "lavish:revealElement", selector: "#revised" });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].behavior, "smooth");
+  scroll.settled = true;
+  sdk.dispatchWindowEvent("scrollend");
+  assertMarkerAtSettledRect(sdk);
+});
+
+test("reveal follows the target frame by frame when no scrollend arrives", () => {
+  const { sdk, scroll } = bootRevealTarget();
+  sdk.sendChromeMessage({ type: "lavish:revealElement", selector: "#revised" });
+  scroll.settled = true;
+  sdk.runFrames();
+  assertMarkerAtSettledRect(sdk);
+});
+
+test("a reveal marker stops tracking once it is removed or replaced", () => {
+  const { sdk, scroll } = bootRevealTarget();
+  sdk.sendChromeMessage({ type: "lavish:revealElement", selector: "#revised" });
+  sdk.sendChromeMessage({ type: "lavish:revealElement", selector: "#revised" });
+  assert.equal(sdk.windowListenerCount("scrollend"), 1, "a new reveal releases the previous one");
+  sdk.runFrames();
+  sdk.runTimersOf(2400);
+  assert.equal(sdk.revealMarkers().length, 0);
+  assert.equal(sdk.windowListenerCount("scrollend"), 0, "the scrollend listener is released");
+  const readsAtRemoval = scroll.reads;
+  sdk.runFrames();
+  sdk.runFrames();
+  assert.equal(scroll.reads, readsAtRemoval, "no frame re-reads the target after the marker is gone");
 });
 
 function buildTable(sdk) {
