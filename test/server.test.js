@@ -2013,7 +2013,7 @@ test("the session chrome page refuses to be framed", async () => {
   }
 });
 
-test("the session chrome bar shows when the artifact file was created", async () => {
+test("the session chrome bar shows when the artifact file was created", async (t) => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const artifact = path.join(dir, "artifact.html");
   await writeFile(artifact, "<!doctype html><html><body><h1>hi</h1></body></html>");
@@ -2027,7 +2027,11 @@ test("the session chrome bar shows when the artifact file was created", async ()
     }).then((res) => res.json());
 
     const info = await stat(artifact);
-    const created = (info.birthtimeMs > 0 ? info.birthtime : info.ctime).toISOString();
+    if (!(info.birthtimeMs > 0)) {
+      t.skip("this filesystem records no birth time");
+      return;
+    }
+    const created = info.birthtime.toISOString();
     const html = await fetch(`${base}/session/${key}`).then((response) => response.text());
     const brand = html.match(/<div class="brand">([\s\S]*?)<\/div>/);
     assert.ok(brand, "the chrome bar must render its brand");
@@ -2047,11 +2051,24 @@ test("artifactCreatedAt reads the file's birth time and is empty when stat fails
   try {
     await writeFile(artifact, "<!doctype html><title>x</title>");
     const info = await stat(artifact);
-    assert.equal(await artifactCreatedAt(artifact), (info.birthtimeMs > 0 ? info.birthtime : info.ctime).toISOString());
+    assert.equal(await artifactCreatedAt(artifact), info.birthtimeMs > 0 ? info.birthtime.toISOString() : "");
     assert.equal(await artifactCreatedAt(path.join(dir, "missing.html")), "");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+// Without a birth time the only other candidate is ctime, which every save moves, so a "Created"
+// stamp built from it would change on each edit.
+test("artifactCreatedAt is empty when the filesystem records no birth time", async () => {
+  const ctime = new Date("2026-09-15T10:00:00.000Z");
+  for (const birthtimeMs of [0, Number.NaN, undefined]) {
+    const statFile = async () => ({ birthtimeMs, birthtime: new Date(0), ctimeMs: ctime.getTime(), ctime });
+    assert.equal(await artifactCreatedAt("/tmp/artifact.html", statFile), "");
+  }
+  const born = new Date("2026-09-14T08:30:00.000Z");
+  const statFile = async () => ({ birthtimeMs: born.getTime(), birthtime: born, ctimeMs: ctime.getTime(), ctime });
+  assert.equal(await artifactCreatedAt("/tmp/artifact.html", statFile), born.toISOString());
 });
 
 test("the chrome bar has no Created stamp without a known creation time", () => {
@@ -2061,7 +2078,8 @@ test("the chrome bar has no Created stamp without a known creation time", () => 
       html,
       /<div class="brand"><span class="brand-mark">Lavish<\/span><span class="brand-support">Editor<\/span><\/div>/,
     );
-    assert.doesNotMatch(html, /brand-stamp|artifactCreated/);
+    assert.doesNotMatch(html, /brand-stamp|id="artifactCreated"/);
+    assert.match(html, /"artifactCreatedAt":""/);
   }
 });
 

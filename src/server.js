@@ -3053,13 +3053,17 @@ if(c)c.textContent=outcome==="no-answer"?"Lavish did not answer the check, so th
 }
 })();`;
 
-// When the artifact file was created, as an ISO string: the birth time where the filesystem
-// records one, else the inode change time. "" when the file cannot be read, so the bar shows no stamp.
-export async function artifactCreatedAt(file) {
+// When the artifact file was created, as an ISO string, from the birth time the filesystem
+// records. "" when the file cannot be read or the filesystem records no birth time, so the bar
+// shows no stamp. The inode change time is no substitute: every save moves it.
+/**
+ * @param {string} file
+ * @param {(file: string) => Promise<{ birthtimeMs?: number, birthtime: Date }>} [statFile]
+ */
+export async function artifactCreatedAt(file, statFile = stat) {
   try {
-    const info = await stat(file);
-    const created = info.birthtimeMs > 0 ? info.birthtime : info.ctime;
-    return Number.isNaN(created.getTime()) ? "" : created.toISOString();
+    const info = await statFile(file);
+    return info.birthtimeMs > 0 ? info.birthtime.toISOString() : "";
   } catch {
     return "";
   }
@@ -3067,10 +3071,14 @@ export async function artifactCreatedAt(file) {
 
 // The server renders UTC so the page reads correctly before the client runs; the client then
 // rewrites the text in the reviewer's local time.
-function artifactCreatedHtml(createdAt) {
+function artifactCreatedIso(createdAt) {
   const date = new Date(String(createdAt || ""));
-  if (!createdAt || Number.isNaN(date.getTime())) return "";
-  const iso = date.toISOString();
+  return !createdAt || Number.isNaN(date.getTime()) ? "" : date.toISOString();
+}
+
+function artifactCreatedHtml(createdAt) {
+  const iso = artifactCreatedIso(createdAt);
+  if (!iso) return "";
   return `<time class="brand-stamp" id="artifactCreated" datetime="${iso}" title="Created ${iso}">Created ${iso.slice(0, 16).replace("T", " ")} UTC</time>`;
 }
 
@@ -3101,6 +3109,7 @@ export function createChromeHtml(
     initialEndedBy: session.ended_by || null,
     initialChat: serializeChat(session.chat || []),
     initialChatAckIds: serializeChatAckIds(session.chat_ack_ids),
+    artifactCreatedAt: artifactCreatedIso(artifactCreatedAt),
     initialChatRevision:
       Number.isSafeInteger(session.chat_revision) && session.chat_revision >= 0 ? session.chat_revision : 0,
     // Bootstrapping the inbox from the server is what makes it survive a browser refresh or a

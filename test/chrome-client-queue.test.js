@@ -12,14 +12,17 @@ const sourceUrl = new URL("../src/chrome-client.js", import.meta.url);
 // that stopped declaring one would leave the corresponding feature silently dead behind an
 // `if (element)` guard - a harness that invents an element for any id would never notice.
 const servedChromeIds = new Set(
-  [...createChromeHtml({ key: "abc", file: "/tmp/artifact.html" }).matchAll(/\sid="([^"]+)"/g)].map(
-    (match) => match[1],
-  ),
+  [
+    ...createChromeHtml(
+      { key: "abc", file: "/tmp/artifact.html" },
+      { artifactCreatedAt: "2026-01-01T00:00:00.000Z" },
+    ).matchAll(/\sid="([^"]+)"/g),
+  ].map((match) => match[1]),
 );
 
 const SERVED_TAB_ICON = "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'/>";
 
-/** @typedef {{ key: string, file: string, layoutGateEnabled?: boolean, layoutGateMaxHoldMs?: number, modeToggleHotkeyKey?: string, initialChat?: any[], initialChatAckIds?: string[], initialChatRevision?: number, initialLayoutWarnings?: any[], chromeLoadToken?: string, initialArtifactRevision?: number, initialArtifactLoadToken?: string, initialArtifactLoadSequence?: number, attachmentMaxBytes?: number, attachmentMaxCount?: number, attachmentAcceptedMime?: string[], initialEnded?: boolean, initialEndedBy?: string | null, revisionPalette?: { hex: string, borderStyle: string, pattern: string }[] }} HarnessSessionData */
+/** @typedef {{ key: string, file: string, layoutGateEnabled?: boolean, layoutGateMaxHoldMs?: number, modeToggleHotkeyKey?: string, initialChat?: any[], initialChatAckIds?: string[], initialChatRevision?: number, initialLayoutWarnings?: any[], chromeLoadToken?: string, initialArtifactRevision?: number, initialArtifactLoadToken?: string, initialArtifactLoadSequence?: number, attachmentMaxBytes?: number, attachmentMaxCount?: number, attachmentAcceptedMime?: string[], initialEnded?: boolean, initialEndedBy?: string | null, revisionPalette?: { hex: string, borderStyle: string, pattern: string }[], artifactCreatedAt?: string }} HarnessSessionData */
 /** @type {HarnessSessionData} */
 const defaultSessionData = {
   key: "abc",
@@ -98,6 +101,8 @@ async function createChromeHarness({
   // Opt-in frozen clock. `reloadChromeAfterServerRestart` waits on wall-clock deadlines, so a
   // test that needs one to expire has to own `Date.now()` rather than sleep through it.
   fakeClock = false,
+  // Where the frozen clock starts, in epoch milliseconds. Only read with `fakeClock`.
+  clockStart = Date.now(),
   // Opt-in phone-width viewport: installs a `window.matchMedia` whose single query answers the
   // chrome's sheet breakpoint, with `setMobile` flipping it the way a resize would. Left off, the
   // window has no matchMedia at all, which is the desktop the other tests run against.
@@ -251,6 +256,27 @@ async function createChromeHarness({
                 },
               });
             }
+            // A bubble's time stamp also lives in its markup: hand back a node that reads its
+            // `datetime` and rewrites its text and title in place.
+            if (selector === "time.chat-stamp") {
+              const stamps = String(child.html || "").matchAll(/<time class="chat-stamp"[^>]*>[^<]*<\/time>/g);
+              for (const [stampHtml] of stamps) {
+                let current = stampHtml;
+                const rewrite = (next) => {
+                  child.html = child.html.replace(current, next);
+                  current = next;
+                };
+                matches.push({
+                  getAttribute: (name) => (current.match(new RegExp(` ${name}="([^"]*)"`)) || [])[1] ?? null,
+                  set textContent(value) {
+                    rewrite(current.replace(/>[^<]*<\/time>$/, ">" + String(value) + "</time>"));
+                  },
+                  set title(value) {
+                    rewrite(current.replace(/ title="[^"]*"/, ` title="${String(value)}"`));
+                  },
+                });
+              }
+            }
             const childClasses = String(child.className || "").split(/\s+/);
             if (selector === ".bubble.user,.bubble.agent:not(.agent-working)") {
               if (
@@ -400,12 +426,23 @@ async function createChromeHarness({
     return fetchImpl(url, init);
   };
 
-  let clockNow = Date.now();
+  let clockNow = clockStart;
+  // `new Date()` reads the frozen clock too, so code that asks "what day is it now" follows it.
+  class FrozenDate extends Date {
+    constructor(...args) {
+      if (args.length === 0) super(clockNow);
+      else super(.../** @type {[string | number | Date]} */ (args));
+    }
+
+    static now() {
+      return clockNow;
+    }
+  }
   const context = {
     AbortController,
     clearTimeout: fakeClearTimeout,
     console,
-    ...(fakeClock ? { Date: { now: () => clockNow, parse: Date.parse } } : {}),
+    ...(fakeClock ? { Date: FrozenDate } : {}),
     fetch: harnessFetch,
     location: {
       protocol: "http:",
@@ -681,6 +718,9 @@ async function createChromeHarness({
       for (const { handler } of documentListeners.get("mousedown") || []) handler({ target });
     },
     runTimers,
+    timerDelays() {
+      return [...timers.values()].map((timer) => timer.ms);
+    },
     advanceClock(ms) {
       clockNow += ms;
     },
@@ -8248,6 +8288,41 @@ test("a transcript entry from today shows the time alone", async () => {
     chrome.element("chatLog").lastAppendedChild.innerHTML,
     new RegExp(`>${at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time></small>`),
   );
+});
+
+test("stamps from yesterday gain their date when a review stays open past local midnight", async () => {
+  const lateEvening = new Date(2026, 8, 15, 23, 58);
+  const at = new Date(2026, 8, 15, 23, 30);
+  const created = new Date(2026, 8, 15, 22, 0);
+  const chrome = await createChromeHarness({
+    fakeClock: true,
+    clockStart: lateEvening.getTime(),
+    sessionData: {
+      ...defaultSessionData,
+      artifactCreatedAt: created.toISOString(),
+      initialChat: [{ role: "agent", text: "Late", html: "<p>Late</p>", at: at.toISOString() }],
+    },
+  });
+  const timeOnly = (date) => date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const withDay = (date) =>
+    date.toLocaleString([], { day: "numeric", month: "numeric", hour: "2-digit", minute: "2-digit" });
+  const bubble = () => chrome.element("chatLog").children[0].innerHTML;
+  const stampText = () => bubble().match(/>([^<]*)<\/time>/)[1];
+
+  assert.equal(stampText(), timeOnly(at));
+  assert.equal(chrome.element("artifactCreated").textContent, "Created " + timeOnly(created));
+
+  // One wake-up is armed for just after the next local midnight.
+  const untilMidnight = new Date(2026, 8, 16).getTime() - lateEvening.getTime() + 1000;
+  assert.equal(chrome.timerDelays().filter((ms) => ms === untilMidnight).length, 1);
+  chrome.advanceClock(untilMidnight);
+  chrome.runTimers(untilMidnight);
+
+  assert.equal(stampText(), withDay(at));
+  assert.equal(chrome.element("artifactCreated").textContent, "Created " + withDay(created));
+  assert.match(bubble(), new RegExp(`title="${at.toLocaleString()}"`));
+  // It re-arms from the current time, one second past the midnight after that.
+  assert.ok(chrome.timerDelays().includes(24 * 60 * 60 * 1000));
 });
 
 test("a transcript entry without a valid at shows no time", async () => {

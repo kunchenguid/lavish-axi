@@ -939,10 +939,37 @@ function chatStampHtml(at) {
 // The server renders the artifact's Created time in UTC; show it in the reviewer's local time.
 function localizeArtifactCreated() {
   const created = document.getElementById("artifactCreated");
-  const stamp = created && localStampParts(created.getAttribute("datetime"));
+  const stamp = created && localStampParts(sessionData.artifactCreatedAt);
   if (!stamp) return;
   created.textContent = "Created " + stamp.text;
   created.title = "Created " + stamp.title;
+}
+
+// A stamp is time-only only while it is from today, so a review left open past local midnight
+// must rewrite every stamp. The wake-up re-arms itself from the current time, and a tab that
+// becomes visible again also refreshes, because a sleeping machine can delay the timer.
+function refreshLocalStamps() {
+  localizeArtifactCreated();
+  for (const time of /** @type {NodeListOf<HTMLTimeElement>} */ (chatLog.querySelectorAll("time.chat-stamp"))) {
+    const stamp = localStampParts(time.getAttribute("datetime"));
+    if (!stamp) continue;
+    time.textContent = stamp.text;
+    time.title = stamp.title;
+  }
+}
+
+let localStampsTimer = null;
+function scheduleLocalStampsRefresh() {
+  clearTimeout(localStampsTimer);
+  const now = new Date();
+  const nextMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+  localStampsTimer = setTimeout(
+    () => {
+      refreshLocalStamps();
+      scheduleLocalStampsRefresh();
+    },
+    nextMidnight.getTime() - now.getTime() + 1000,
+  );
 }
 
 function chatBubbleHtml(entry) {
@@ -4879,6 +4906,12 @@ setWarningsDrawerOpen(false);
 renderWarnings();
 initialChat.forEach((item) => addChat(item));
 localizeArtifactCreated();
+scheduleLocalStampsRefresh();
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible") return;
+  refreshLocalStamps();
+  scheduleLocalStampsRefresh();
+});
 retiredDrafts.forEach((text) => renderRetiredDraft(text));
 setAgentPresence("waiting");
 // The session already ended before this page (re)loaded, so there is no future live `ended` event
