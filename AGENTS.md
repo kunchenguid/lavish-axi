@@ -61,6 +61,7 @@ Each line is the rule. [docs/invariants.md](docs/invariants.md) has the failure 
 - Artifact asset serving (`/artifact/:key/<path>`) stays inside that session's HTML-file directory, resolves with `realpath`, and never serves a symlink target outside that tree. [Request flow](docs/invariants.md#request-flow).
 - Layout detection never emits `feedback`. Only a user prompt and the narrow fatal artifact-failure path may wake `lavish-axi poll`. [Request flow](docs/invariants.md#request-flow).
 - Layout-diagnostics reports are fire-and-forget and never hold the artifact behind a round-trip. Ordinary layout findings are never relabelled fatal. [Request flow](docs/invariants.md#request-flow).
+- Unsent drafts (`PUT /api/:key/drafts`) are same-origin guarded, keep each note's `prompt_id` on adoption, and are pruned of every accepted `prompt_id` under the accept's lock. [Request flow](docs/invariants.md#request-flow).
 - The chrome mints each queued prompt's `prompt_id` (never from the iframe) and removes a queued note only when the transcript acknowledges that id. Evicted ids stay on `chat_ack_ids`. [Request flow](docs/invariants.md#request-flow).
 - Only agent chat entries render as HTML. User entries are always escaped. [Request flow](docs/invariants.md#request-flow).
 - A note's Sending state is derived from the existing send bookkeeping, never tracked separately. [Request flow](docs/invariants.md#request-flow).
