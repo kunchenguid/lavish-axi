@@ -3370,7 +3370,9 @@ test("opening an artifact names that session as the one to reload across a versi
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
     recorder.close();
-    await rm(dir, { recursive: true, force: true });
+    // The spawned server runs with the state dir as its cwd, and Windows refuses to remove a
+    // directory that a still-exiting process is in.
+    await rm(dir, { recursive: true, force: true, maxRetries: 10 });
   }
 });
 
