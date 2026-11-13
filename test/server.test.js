@@ -1031,6 +1031,70 @@ test("chrome chat bubbles follow the preview mock shades", async () => {
   assert.match(css, /border-top-color:var\(--accent\)/);
 });
 
+// The panel hides horizontal overflow, so a word that cannot wrap is cut off: a reviewer's long
+// URL would lose its tail, and an agent's long path would run past its bubble.
+test("chrome wraps long unbroken strings inside chat bubbles", async () => {
+  const css = await chromeCssSource();
+
+  assert.match(css, /\.bubble-text\{[^}]*white-space:pre-wrap/);
+  assert.match(css, /\.bubble-text\{[^}]*overflow-wrap:anywhere/);
+  assert.match(css, /\.chat-md\{[^}]*overflow-wrap:anywhere/);
+});
+
+test("chrome keeps short inline code on one line and lets long inline code wrap chip by chip", async () => {
+  const css = await chromeCssSource();
+  const short = css.match(/\.chat-md code\{([^}]*)\}/)?.[1] || "";
+  const long = css.match(/\.chat-md code\.chat-code-long\{([^}]*)\}/)?.[1] || "";
+
+  assert.match(short, /white-space:nowrap/);
+  assert.match(long, /white-space:normal/);
+  assert.match(long, /overflow-wrap:anywhere/);
+  assert.match(long, /-webkit-box-decoration-break:clone/);
+  assert.match(long, /(^|;)box-decoration-break:clone/);
+  // A fenced block is a <code> too: it must keep the <pre>'s line breaks and wrapping.
+  assert.match(css, /\.chat-md pre code\{[^}]*white-space:inherit/);
+  assert.match(css, /\.chat-md pre\{[^}]*white-space:pre-wrap;overflow-wrap:anywhere/);
+});
+
+test("chrome lets the first and last child resets win over the heading margins", async () => {
+  const css = await chromeCssSource();
+  const heading = css.indexOf(".chat-md .chat-h{");
+  const firstReset = css.indexOf(".chat-md >:first-child{margin-top:0;}");
+  const lastReset = css.indexOf(".chat-md >:last-child{margin-bottom:0;}");
+
+  // Same specificity, so source order decides: the resets must come after the heading rule.
+  assert.ok(heading !== -1 && firstReset !== -1 && lastReset !== -1);
+  assert.ok(firstReset > heading, "a reply that opens with a heading must not get extra space");
+  assert.ok(lastReset > heading, "a reply that ends with a heading must not get extra space");
+});
+
+test("chrome grows the queued-note editor with its text where field-sizing is supported", async () => {
+  const css = await chromeCssSource();
+  const base = css.match(/\.queued-edit-input\{([^}]*)\}/)?.[1] || "";
+  const grown = css.match(/@supports \(field-sizing:content\)\{\.queued-edit-input\{([^}]*)\}\}/)?.[1] || "";
+
+  // Browsers without field-sizing keep the fixed minimum and the free vertical resize.
+  assert.match(base, /min-height:64px/);
+  assert.match(base, /resize:vertical/);
+  assert.doesNotMatch(base, /field-sizing|max-height/);
+  assert.match(grown, /field-sizing:content/);
+  assert.match(grown, /max-height:/);
+  assert.match(grown, /overflow-y:auto/);
+});
+
+test("chrome reads only custom properties it declares or sets at runtime", async () => {
+  const css = await readFile(new URL("../src/chrome.css", import.meta.url), "utf8");
+  const js = await chromeClientSource();
+  const declared = new Set([...css.matchAll(/(--[\w-]+)\s*:/g)].map((match) => match[1]));
+  for (const match of js.matchAll(/setProperty\("(--[\w-]+)"/g)) declared.add(match[1]);
+  const undefinedTokens = [...new Set([...css.matchAll(/var\(\s*(--[\w-]+)/g)].map((match) => match[1]))].filter(
+    (name) => !declared.has(name),
+  );
+
+  assert.deepEqual(undefinedTokens, []);
+  assert.match(css, /\.handoff-takeover \{[^}]*font-weight: var\(--w-semi\);/);
+});
+
 test("chrome includes a chat-like prompt composer and agent reply listener", async () => {
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
   const js = await chromeClientSource();

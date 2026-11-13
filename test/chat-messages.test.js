@@ -61,6 +61,44 @@ test("an unterminated fence runs to the end without throwing", () => {
   assert.equal(renderChatMarkdown("```\nopen"), "<pre><code>open</code></pre>");
 });
 
+test("a fenced block indented inside a list item renders as code inside that item", () => {
+  const html = renderChatMarkdown(
+    "1. Renamed the section.\n2. Added the rollback command:\n   ```sh\n   curl -X POST https://search.internal/_aliases\n     -d @rollback.json\n   ```\n3. Shortened the intro.",
+  );
+  assert.equal(
+    html,
+    "<ol><li>Renamed the section.</li><li>Added the rollback command:<pre><code>curl -X POST https://search.internal/_aliases\n  -d @rollback.json</code></pre></li><li>Shortened the intro.</li></ol>",
+  );
+  assert.doesNotMatch(html, /<code><\/code>/);
+});
+
+test("an indented fence after a blank line still belongs to its list item", () => {
+  assert.equal(
+    renderChatMarkdown("- Run:\n\n  ~~~\n  pnpm migrate\n\n  pnpm seed\n  ~~~\n- Then check the counts."),
+    "<ul><li>Run:<pre><code>pnpm migrate\n\npnpm seed</code></pre></li><li>Then check the counts.</li></ul>",
+  );
+});
+
+test("an indented fence keeps its place among nested items and following text", () => {
+  assert.equal(
+    renderChatMarkdown("- a\n  - b\n  ```\n  <x>\n  ```\n  after **code**\n- c"),
+    "<ul><li>a<ul><li>b</li></ul><pre><code>&lt;x&gt;</code></pre>after <strong>code</strong></li><li>c</li></ul>",
+  );
+});
+
+test("an unterminated indented fence inside a list runs to the end", () => {
+  assert.equal(renderChatMarkdown("- run:\n  ```\n  open"), "<ul><li>run:<pre><code>open</code></pre></li></ul>");
+});
+
+test("long inline code is marked so it can wrap with its chip intact; short code is not", () => {
+  assert.equal(
+    renderChatMarkdown(
+      "ship on `2026-12-03` from `src/chat-messages.js` or `/Users/me/projects/search/index/products-v2.json`",
+    ),
+    '<p>ship on <code>2026-12-03</code> from <code>src/chat-messages.js</code> or <code class="chat-code-long">/Users/me/projects/search/index/products-v2.json</code></p>',
+  );
+});
+
 test("inline code protects the markers inside it", () => {
   assert.equal(
     renderChatMarkdown("use `**literal**` and **bold** and *it* and _it2_ and snake_case_name"),

@@ -30,6 +30,10 @@ export function normalizePromptId(value) {
 const LIST_ITEM = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/;
 const BLOCK_START = /^(?:```|~~~|#{1,6}\s|\s*(?:[-*+]|\d+[.)])\s+)/;
 const FENCE_OPEN = /^(```|~~~)/;
+const INDENTED_FENCE_OPEN = /^(\s+)(```|~~~)/;
+// Inline code longer than this may not fit one line of the 360px column, so it may wrap; shorter
+// spans (a date, a flag, a file name) stay on one line.
+const LONG_INLINE_CODE = 24;
 const HEADING = /^(#{1,6})\s+(.+?)(?:\s+#+)?\s*$/;
 
 function escapeHtml(value) {
@@ -257,6 +261,11 @@ function renderLinksAndEmphasis(text) {
   return html + renderEmphasis(text.slice(offset));
 }
 
+function inlineCodeHtml(code) {
+  const open = code.length > LONG_INLINE_CODE ? '<code class="chat-code-long">' : "<code>";
+  return open + escapeHtml(code) + "</code>";
+}
+
 function renderInline(text) {
   let html = "";
   let offset = 0;
@@ -279,7 +288,7 @@ function renderInline(text) {
       continue;
     }
     html += renderLinksAndEmphasis(escapeHtml(text.slice(offset, i)));
-    html += code ? "<code>" + escapeHtml(text.slice(i + 1, end - 1)) + "</code>" : escapeHtml(text.slice(i, end));
+    html += code ? inlineCodeHtml(text.slice(i + 1, end - 1)) : escapeHtml(text.slice(i, end));
     i = end;
     offset = end;
   }
@@ -287,7 +296,8 @@ function renderInline(text) {
 }
 
 // Items nest by indentation; a change of marker at the same depth starts a new list, as
-// CommonMark does.
+// CommonMark does. A fenced block or the text after it is a leaf that belongs to the nearest item
+// indented less than it, in the order it was written.
 function renderListItems(items) {
   const root = { children: [] };
   const stack = [{ node: root, indent: -1 }];
@@ -295,17 +305,27 @@ function renderListItems(items) {
     const node = { ...item, children: [] };
     while (stack.length > 1 && item.indent <= stack[stack.length - 1].indent) stack.pop();
     stack[stack.length - 1].node.children.push(node);
-    stack.push({ node, indent: item.indent });
+    if (!item.leaf) stack.push({ node, indent: item.indent });
   }
   const render = (nodes) => {
     let html = "";
     let i = 0;
     while (i < nodes.length) {
+      if (nodes[i].leaf === "code") {
+        html += "<pre><code>" + escapeHtml(nodes[i].text) + "</code></pre>";
+        i += 1;
+        continue;
+      }
+      if (nodes[i].leaf === "text") {
+        html += renderInline(nodes[i].text);
+        i += 1;
+        continue;
+      }
       const ordered = nodes[i].ordered;
       const tag = ordered ? "ol" : "ul";
       const start = ordered && nodes[i].start !== "1" ? ' start="' + nodes[i].start + '"' : "";
       let inner = "";
-      while (i < nodes.length && nodes[i].ordered === ordered) {
+      while (i < nodes.length && !nodes[i].leaf && nodes[i].ordered === ordered) {
         inner += "<li>" + renderInline(nodes[i].text) + render(nodes[i].children) + "</li>";
         i += 1;
       }
@@ -354,14 +374,39 @@ export function renderChatMarkdown(text) {
     }
     if (LIST_ITEM.test(line)) {
       const items = [];
-      while (i < lines.length && LIST_ITEM.test(lines[i])) {
-        const item = LIST_ITEM.exec(lines[i]);
-        const ordered = /\d/.test(item[2]);
-        const start = ordered ? item[2].replace(/[.)]$/, "").replace(/^0+(?=\d)/, "") : "";
-        items.push({ indent: item[1].length, ordered, start, text: item[3] });
-        i += 1;
-        while (i < lines.length && lines[i].trim() && /^\s{2,}/.test(lines[i]) && !LIST_ITEM.test(lines[i])) {
-          items[items.length - 1].text += " " + lines[i].trim();
+      while (i < lines.length) {
+        if (LIST_ITEM.test(lines[i])) {
+          const item = LIST_ITEM.exec(lines[i]);
+          const ordered = /\d/.test(item[2]);
+          const start = ordered ? item[2].replace(/[.)]$/, "").replace(/^0+(?=\d)/, "") : "";
+          items.push({ indent: item[1].length, ordered, start, text: item[3] });
+          i += 1;
+        } else {
+          // An indented fence belongs to the item above it, even after a blank line.
+          let next = i;
+          while (next < lines.length && !lines[next].trim()) next += 1;
+          const fence = next < lines.length ? INDENTED_FENCE_OPEN.exec(lines[next]) : null;
+          if (!fence) break;
+          const indent = fence[1].length;
+          const buffer = [];
+          i = next + 1;
+          while (i < lines.length && !lines[i].trimStart().startsWith(fence[2])) {
+            buffer.push(stripIndent(lines[i], indent));
+            i += 1;
+          }
+          i += 1;
+          items.push({ indent, leaf: "code", text: buffer.join("\n") });
+        }
+        while (
+          i < lines.length &&
+          lines[i].trim() &&
+          /^\s{2,}/.test(lines[i]) &&
+          !LIST_ITEM.test(lines[i]) &&
+          !INDENTED_FENCE_OPEN.test(lines[i])
+        ) {
+          const last = items[items.length - 1];
+          if (last.leaf === "code") items.push({ indent: last.indent, leaf: "text", text: lines[i].trim() });
+          else last.text += " " + lines[i].trim();
           i += 1;
         }
       }
@@ -377,6 +422,14 @@ export function renderChatMarkdown(text) {
     out.push("<p>" + buffer.map((entry) => renderInline(entry.trim())).join("<br>") + "</p>");
   }
   return out.join("");
+}
+
+// Removes up to `indent` leading whitespace characters: the fence's own indentation, so a block
+// inside a list item keeps only the indentation its author wrote inside the fence.
+function stripIndent(line, indent) {
+  let cut = 0;
+  while (cut < indent && cut < line.length && /\s/.test(line[cut])) cut += 1;
+  return line.slice(cut);
 }
 
 function bound(value, max) {
