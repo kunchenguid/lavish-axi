@@ -2912,6 +2912,25 @@ test("server spawn options can persist detached server output to a log fd", () =
   assert.deepEqual(options.stdio, ["ignore", 17, 17]);
 });
 
+test("server spawn options run the shared server from the state dir, not the caller's folder", () => {
+  const previousStateDir = process.env.LAVISH_AXI_STATE_DIR;
+  try {
+    const absolute = path.join(os.tmpdir(), "lavish-axi-cwd-test-state");
+    process.env.LAVISH_AXI_STATE_DIR = absolute;
+    const options = createServerSpawnOptions();
+    assert.equal(options.cwd, absolute);
+    assert.equal(options.env?.LAVISH_AXI_STATE_DIR, absolute);
+
+    process.env.LAVISH_AXI_STATE_DIR = "relative-state";
+    const relative = createServerSpawnOptions();
+    assert.equal(relative.cwd, path.resolve("relative-state"));
+    assert.equal(relative.env?.LAVISH_AXI_STATE_DIR, path.resolve("relative-state"));
+  } finally {
+    if (previousStateDir === undefined) delete process.env.LAVISH_AXI_STATE_DIR;
+    else process.env.LAVISH_AXI_STATE_DIR = previousStateDir;
+  }
+});
+
 test("detached server entry dispatches the CLI", () => {
   const entry = fileURLToPath(new URL("../bin/lavish-axi-server.js", import.meta.url));
   const result = spawnSync(process.execPath, [entry, "--version"], { encoding: "utf8" });
