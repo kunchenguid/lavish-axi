@@ -908,17 +908,58 @@ async function copyText(text) {
 // One transcript entry, as the server serialized it (src/chat-messages.js). An agent entry's
 // `html` is the server's rendering of the agent's text and is the only html ever set here; a
 // user entry is always escaped text, with its anchor line and thumbnails when it carries them.
+// A local date and time for the reviewer: the time alone when it is today, the day and month
+// added otherwise. The full local date and time is the hover title. An unparseable value is "".
+function localStampParts(at) {
+  if (!at) return null;
+  const date = new Date(String(at));
+  if (Number.isNaN(date.getTime())) return null;
+  const sameDay = date.toDateString() === new Date().toDateString();
+  const text = sameDay
+    ? date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+    : date.toLocaleString([], { day: "numeric", month: "numeric", hour: "2-digit", minute: "2-digit" });
+  return { iso: date.toISOString(), text, title: date.toLocaleString() };
+}
+
+// The entry's `at`, beside its role label. An entry without a parseable `at` shows no stamp.
+function chatStampHtml(at) {
+  const stamp = localStampParts(at);
+  if (!stamp) return "";
+  return (
+    ' <time class="chat-stamp" datetime="' +
+    escapeHtml(stamp.iso) +
+    '" title="' +
+    escapeHtml(stamp.title) +
+    '">' +
+    escapeHtml(stamp.text) +
+    "</time>"
+  );
+}
+
+// The server renders the artifact's Created time in UTC; show it in the reviewer's local time.
+function localizeArtifactCreated() {
+  const created = document.getElementById("artifactCreated");
+  const stamp = created && localStampParts(created.getAttribute("datetime"));
+  if (!stamp) return;
+  created.textContent = "Created " + stamp.text;
+  created.title = "Created " + stamp.title;
+}
+
 function chatBubbleHtml(entry) {
   if (entry.role === "agent") {
     return (
-      "<small>Agent</small>" +
+      "<small>Agent" +
+      chatStampHtml(entry.at) +
+      "</small>" +
       (typeof entry.html === "string" && entry.html
         ? '<div class="chat-md">' + entry.html + "</div>"
         : '<div class="bubble-text">' + escapeHtml(entry.text) + "</div>")
     );
   }
   return (
-    "<small>You</small>" +
+    "<small>You" +
+    chatStampHtml(entry.at) +
+    "</small>" +
     anchorHtml(entry.anchor) +
     userBubbleTextHtml(entry, entry.text) +
     bubbleAttachmentsHtml(entry) +
@@ -4837,6 +4878,7 @@ setChromeOutdated(false);
 setWarningsDrawerOpen(false);
 renderWarnings();
 initialChat.forEach((item) => addChat(item));
+localizeArtifactCreated();
 retiredDrafts.forEach((text) => renderRetiredDraft(text));
 setAgentPresence("waiting");
 // The session already ended before this page (re)loaded, so there is no future live `ended` event

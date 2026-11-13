@@ -55,6 +55,12 @@ function withoutReceipt(html) {
   return String(html).replace(/<div class="receipt">[\s\S]*<\/div>$/, "");
 }
 
+// A transcript entry with a valid `at` carries its local time beside the role label. Tests about
+// the rest of the bubble drop it; the stamp has its own tests.
+function withoutStamp(html) {
+  return String(html).replace(/ <time class="chat-stamp"[^>]*>[^<]*<\/time>/g, "");
+}
+
 function identicalProjectionNote(offset) {
   return {
     prompt: "Make this phrase punchier",
@@ -7573,11 +7579,14 @@ test("a sent batch settles in place: notes read Sending until the server's trans
   const bubbles = chrome.element("chatLog").children;
   assert.equal(bubbles.length, 2);
   assert.match(
-    bubbles[0].innerHTML,
+    withoutStamp(bubbles[0].innerHTML),
     /^<small>You<\/small><div class="anchor" [^>]*><span class="anchor-kind">&lt;h2&gt;<\/span>/,
   );
   assert.match(bubbles[0].innerHTML, /<div class="bubble-text">Rename this<\/div>/);
-  assert.equal(withoutReceipt(bubbles[1].innerHTML), '<small>You</small><div class="bubble-text">Keep the table</div>');
+  assert.equal(
+    withoutStamp(withoutReceipt(bubbles[1].innerHTML)),
+    '<small>You</small><div class="bubble-text">Keep the table</div>',
+  );
 });
 
 test("an accepted note merges before live entries that arrived before its response", async () => {
@@ -8189,9 +8198,73 @@ test("a transcript sync accepts updated rendering for the same stored agent entr
   });
 
   assert.equal(
-    chrome.element("chatLog").lastAppendedChild.innerHTML,
+    withoutStamp(chrome.element("chatLog").lastAppendedChild.innerHTML),
     '<small>Agent</small><div class="chat-md"><p><strong>New rendering</strong></p></div>',
   );
+});
+
+test("each transcript entry shows its local time beside the You and Agent labels", async () => {
+  const userAt = new Date(2026, 8, 15, 9, 5);
+  const agentAt = new Date(2026, 8, 15, 9, 7);
+  const chrome = await createChromeHarness({
+    sessionData: {
+      ...defaultSessionData,
+      initialChat: [
+        { role: "user", kind: "message", text: "Question", at: userAt.toISOString() },
+        { role: "agent", text: "Answer", html: "<p>Answer</p>", at: agentAt.toISOString() },
+      ],
+    },
+  });
+
+  const [user, agent] = chrome.element("chatLog").children;
+  for (const [bubble, role, at] of [
+    [user, "You", userAt],
+    [agent, "Agent", agentAt],
+  ]) {
+    const stamp = bubble.innerHTML.match(
+      new RegExp(`^<small>${role} <time class="chat-stamp" datetime="([^"]+)" title="([^"]+)">([^<]+)</time></small>`),
+    );
+    assert.ok(stamp, `${role} label must carry a time: ${bubble.innerHTML}`);
+    assert.equal(stamp[1], at.toISOString());
+    assert.equal(stamp[2], at.toLocaleString());
+    // Not today, so the day and month lead the time.
+    assert.equal(
+      stamp[3],
+      at.toLocaleString([], { day: "numeric", month: "numeric", hour: "2-digit", minute: "2-digit" }),
+    );
+  }
+});
+
+test("a transcript entry from today shows the time alone", async () => {
+  const at = new Date();
+  const chrome = await createChromeHarness({
+    sessionData: {
+      ...defaultSessionData,
+      initialChat: [{ role: "agent", text: "Now", html: "<p>Now</p>", at: at.toISOString() }],
+    },
+  });
+
+  assert.match(
+    chrome.element("chatLog").lastAppendedChild.innerHTML,
+    new RegExp(`>${at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time></small>`),
+  );
+});
+
+test("a transcript entry without a valid at shows no time", async () => {
+  const chrome = await createChromeHarness({
+    sessionData: {
+      ...defaultSessionData,
+      initialChat: [
+        { role: "user", kind: "message", text: "No stamp" },
+        { role: "agent", text: "Bad stamp", html: "<p>Bad stamp</p>", at: "not a date" },
+      ],
+    },
+  });
+
+  const [user, agent] = chrome.element("chatLog").children;
+  assert.match(user.innerHTML, /^<small>You<\/small>/);
+  assert.equal(agent.innerHTML, '<small>Agent</small><div class="chat-md"><p>Bad stamp</p></div>');
+  assert.doesNotMatch(user.innerHTML + agent.innerHTML, /chat-stamp/);
 });
 
 test("a live agent reply remains reconcilable with a later sent-note transcript", async () => {

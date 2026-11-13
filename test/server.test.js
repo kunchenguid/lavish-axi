@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { on, once } from "node:events";
-import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { createServer, request as httpRequest } from "node:http";
 import { connect as netConnect } from "node:net";
 import { homedir, networkInterfaces, tmpdir } from "node:os";
@@ -15,6 +15,7 @@ process.env.LAVISH_AXI_LINK_HOST = "127.0.0.1";
 
 import {
   allowsAllHosts,
+  artifactCreatedAt,
   buildAllowedHostnames,
   CHROME_BOOT_FAILSAFE_MS,
   CHROME_LAYOUT_GATE_MAX_HOLD_MS,
@@ -2009,6 +2010,58 @@ test("the session chrome page refuses to be framed", async () => {
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("the session chrome bar shows when the artifact file was created", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body><h1>hi</h1></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  const base = `http://127.0.0.1:${server.port}`;
+  try {
+    const { key } = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    }).then((res) => res.json());
+
+    const info = await stat(artifact);
+    const created = (info.birthtimeMs > 0 ? info.birthtime : info.ctime).toISOString();
+    const html = await fetch(`${base}/session/${key}`).then((response) => response.text());
+    const brand = html.match(/<div class="brand">([\s\S]*?)<\/div>/);
+    assert.ok(brand, "the chrome bar must render its brand");
+    assert.equal(
+      brand[1],
+      `<span class="brand-mark">Lavish</span><span class="brand-support">Editor</span><time class="brand-stamp" id="artifactCreated" datetime="${created}" title="Created ${created}">Created ${created.slice(0, 16).replace("T", " ")} UTC</time>`,
+    );
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("artifactCreatedAt reads the file's birth time and is empty when stat fails", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-created-"));
+  const artifact = path.join(dir, "artifact.html");
+  try {
+    await writeFile(artifact, "<!doctype html><title>x</title>");
+    const info = await stat(artifact);
+    assert.equal(await artifactCreatedAt(artifact), (info.birthtimeMs > 0 ? info.birthtime : info.ctime).toISOString());
+    assert.equal(await artifactCreatedAt(path.join(dir, "missing.html")), "");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("the chrome bar has no Created stamp without a known creation time", () => {
+  for (const artifactCreatedAt of [undefined, "", "not a date"]) {
+    const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" }, { artifactCreatedAt });
+    assert.match(
+      html,
+      /<div class="brand"><span class="brand-mark">Lavish<\/span><span class="brand-support">Editor<\/span><\/div>/,
+    );
+    assert.doesNotMatch(html, /brand-stamp|artifactCreated/);
   }
 });
 
