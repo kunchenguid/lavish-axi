@@ -20,6 +20,7 @@ import {
   CHROME_LAYOUT_GATE_MAX_HOLD_MS,
   createChromeHtml,
   createSdkJs,
+  createSessionIndexHtml,
   displayPathParts,
   exportContentDisposition,
   extractArtifactHead,
@@ -6852,4 +6853,55 @@ test("chat-sync stamps a note seen when a poll takes it, working when the artifa
     await server.close();
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("session index lists sessions most-recent-first with dates, status and listener", () => {
+  const sessions = [
+    {
+      key: "old",
+      file: "/Users/me/work/old.html",
+      url: "http://127.0.0.1:4387/session/old",
+      status: "open",
+      pending_prompts: 0,
+      updated_at: "2026-10-01T09:00:00.000Z",
+    },
+    {
+      key: "new",
+      file: "/Users/me/work/<new>.html",
+      url: "http://127.0.0.1:4387/session/new",
+      status: "feedback",
+      pending_prompts: 2,
+      updated_at: "2026-10-24T17:30:00.000Z",
+    },
+    {
+      key: "ended",
+      file: "/Users/me/work/ended.html",
+      url: "http://127.0.0.1:4387/session/ended",
+      status: "ended",
+      pending_prompts: 0,
+      updated_at: "2026-10-10T12:00:00.000Z",
+    },
+  ];
+  const html = createSessionIndexHtml(sessions, {
+    listeners: new Map([["new", "agent-listener"]]),
+    home: "/Users/me",
+  });
+
+  const hrefs = [...html.matchAll(/href="([^"]+)"/g)].map((match) => match[1]);
+  assert.deepEqual(hrefs, ["/session/new", "/session/ended", "/session/old"]);
+  assert.match(html, /2026-10-24 17:30 UTC/);
+  assert.match(html, /~\/work\//);
+  assert.match(html, /&lt;new&gt;\.html/);
+  assert.doesNotMatch(html, /<new>/);
+  assert.match(html, /2 pending/);
+  assert.match(html, /listener: agent-listener/);
+  assert.match(html, /listener: none/);
+});
+
+test("session index shows an empty state with no sessions", () => {
+  const html = createSessionIndexHtml([]);
+
+  assert.match(html, /Lavish Editor is running/);
+  assert.match(html, /No sessions yet/);
+  assert.doesNotMatch(html, /<ul class="sessions"/);
 });

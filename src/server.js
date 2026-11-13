@@ -762,8 +762,14 @@ export async function serve({
     return defaultJsonParser(req, res, next);
   });
 
-  app.get("/", (_req, res) => {
-    res.type("html").send(createLandingHtml());
+  app.get("/", async (_req, res, next) => {
+    try {
+      const sessions = await store.listSessions();
+      const listeners = new Map([...activePolls].map(([key, holder]) => [key, listenerLabel(holder)]));
+      res.type("html").send(createSessionIndexHtml(sessions, { listeners }));
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.get("/health", async (req, res) => {
@@ -2489,8 +2495,30 @@ function wantsHtml(req) {
   return accept.toLowerCase().includes("text/html");
 }
 
-function createLandingHtml() {
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Lavish Editor</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f7f4ef;color:#25221f;font:16px/1.5 system-ui,sans-serif}.card{width:min(560px,calc(100% - 40px));padding:32px;border:1px solid #d9d0c5;border-radius:16px;background:#fffdf9;box-shadow:0 12px 40px #25221f18}h1{margin:0 0 12px;font-size:26px}p{margin:0}</style></head><body><main class="card"><h1>Lavish Editor is running</h1><p>Open the review session URL printed by your agent.</p></main></body></html>`;
+function sessionActivityTime(session) {
+  const time = Date.parse(session.updated_at || "");
+  return Number.isNaN(time) ? 0 : time;
+}
+
+// Lists every session on this machine, most recent activity first. The palette and fonts are the
+// chrome's own tokens from chrome.css, so the index reads as part of the same editor.
+export function createSessionIndexHtml(sessions, { listeners = new Map(), home = homedir() } = {}) {
+  const ordered = [...sessions].sort((a, b) => sessionActivityTime(b) - sessionActivityTime(a));
+  const items = ordered
+    .map((session) => {
+      const time = sessionActivityTime(session);
+      const when = time ? `${new Date(time).toISOString().slice(0, 16).replace("T", " ")} UTC` : "unknown";
+      const { head, tail } = displayPathParts(session.file, home);
+      const listener = listeners.get(session.key) || "none";
+      // Relative to this server, so the row keeps working when the stored session.url is stale
+      // (for example a loopback link from before Tailscale bound).
+      return `<li><a class="row" href="${escapeHtml(`/session/${session.key}`)}"><time class="when" datetime="${escapeHtml(session.updated_at || "")}">${escapeHtml(when)}</time><span class="file"><span class="dir">${escapeHtml(head)}</span>${escapeHtml(tail)}</span><span class="meta">${escapeHtml(session.status || "open")}</span><span class="meta">${session.pending_prompts || 0} pending</span><span class="meta">listener: ${escapeHtml(listener)}</span></a></li>`;
+    })
+    .join("");
+  const body = ordered.length
+    ? `<ul class="sessions">${items}</ul>`
+    : `<p class="empty">No sessions yet. Open a review with <code>lavish-axi &lt;html-file&gt;</code>.</p>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Lavish Editor sessions</title><style>:root{color-scheme:dark;--bg:#0f1115;--panel:#11141a;--elevated:#1c212b;--border:#303745;--border-subtle:#2a2f3a;--fg:#f7f3ea;--dim:#aeb6c6;--label:#8c96aa;--accent:#f4c95d;--font-sans:Geist,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;--font-mono:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}body{margin:0;min-height:100vh;background:var(--bg);color:var(--fg);font:14px/1.45 var(--font-sans)}.page{width:min(880px,calc(100% - 32px));margin:0 auto;padding:40px 0}.status{margin:0 0 8px;color:var(--accent);font-size:12px}h1{margin:0 0 4px;font-size:28px;line-height:1.25}.sub{margin:0 0 24px;color:var(--label)}.sessions{margin:0;padding:0;list-style:none;border:1px solid var(--border);border-radius:12px;background:var(--panel);overflow:hidden}.sessions li+li{border-top:1px solid var(--border-subtle)}.row{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:4px 16px;align-items:center;padding:12px 16px;color:inherit;text-decoration:none}.row:hover{background:var(--elevated)}.row:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}.when{font-family:var(--font-mono);color:var(--dim);white-space:nowrap}.file{min-width:0;overflow-wrap:anywhere}.dir{color:var(--label)}.meta{color:var(--label);font-size:12px;white-space:nowrap}.empty{color:var(--dim)}code{font-family:var(--font-mono)}@media (max-width:640px){.row{grid-template-columns:minmax(0,1fr)}}</style></head><body><main class="page"><p class="status">Lavish Editor is running</p><h1>Sessions</h1><p class="sub">Most recent activity first.</p>${body}</main></body></html>`;
 }
 
 function createDeniedHtml({ title, message, workingUrl }) {
