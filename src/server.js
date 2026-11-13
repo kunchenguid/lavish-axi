@@ -139,6 +139,7 @@ const ATTACHMENT_SWEEP_INTERVAL_MS = 60 * 60_000;
 // in the chrome's outdated banner, so an unknown value is dropped rather than passed through to
 // text the user would read as a fact.
 const SHUTDOWN_REASONS = new Set(["upgrade", "local-build", "stop"]);
+const SHUTTING_DOWN_ERROR = "Lavish server is shutting down";
 const AGENT_LISTENER_LABEL = "agent-listener";
 
 // Live-reload coalescing. A normal save is one reload after a short debounce. While a queued
@@ -351,6 +352,8 @@ export async function serve({
   const activePolls = new Map();
   const deliveredFeedback = new Set();
   const pollOwnershipLock = new AsyncMutex();
+  // Every poll take still running, through its delivery or put-back. Retirement waits for them.
+  const pollTakes = new Set();
   // Keyed by session so a version-driven shutdown can reload the one chrome whose artifact is
   // being reopened and leave every other open review page on screen. Current chromes use a
   // WebSocket, while the legacy SSE route remains available during rolling local upgrades.
@@ -539,9 +542,8 @@ export async function serve({
   function finishFeedbackDelivery(key, result) {
     if (result.status !== "feedback") return;
     markFeedbackDelivered(key, activePolls, deliveredFeedback, events);
-    // The take already stamped the batch Seen in state.json (docs/delivery-acks.md); tell the open
-    // tabs only now, on the path that is about to write the response, never from the destructive
-    // take itself, so a tab is not told Seen for a batch a disconnect is about to put back.
+    // Publish the delivery sync only after finish. Receipt visibility before then follows the
+    // stamping rules in docs/invariants.md#request-flow.
     void publishChatSync(key);
   }
 
@@ -630,6 +632,82 @@ export async function serve({
     // a refused restore included, which still takes the stamps off.
     await publishChatSync(key);
   }
+
+  // Releases a poll's ownership and, once nothing listens, its disconnect grace state.
+  function releaseHolder(holder) {
+    releasePollListener(holder, activePolls, deliveredFeedback, events);
+    if (!activePolls.has(holder.key)) {
+      clearBrowserDisconnectTimer(holder.key);
+      browserDisconnectPending.delete(holder.key);
+    }
+    refreshIdleTimer();
+  }
+
+  // Writing a taken batch is not delivering it: `end()` returning only hands the bytes to the
+  // socket. The batch counts as delivered when the response finishes; a response that closes,
+  // errors, or throws first puts it back exactly like a disconnect during the take. The first of
+  // those signals settles the delivery once, and the holder is kept until then so no other poll
+  // can take or claim over a batch that is still being written or put back. A takeover cannot
+  // append its own response to bytes already written, so it cancels them instead.
+  function writeFeedback(holder, res, result, write) {
+    const { key } = holder;
+    const delivery = { concluded: false };
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      let writeError = null;
+      const settle = (finished) => {
+        if (settled) return;
+        settled = true;
+        res.off("finish", onFinish);
+        res.off("close", onClose);
+        res.off("error", onFailure);
+        holder.delivery = null;
+        const done = () => (writeError ? reject(writeError) : resolve(undefined));
+        if (finished) {
+          // A takeover, reply, end, or reopen may have concluded this round while its bytes were
+          // still flushing; the late finish must not mark the agent working in a round that is over.
+          try {
+            const current = !holder.replaced && !delivery.concluded;
+            if (current) finishFeedbackDelivery(key, result);
+            else void publishChatSync(key);
+            releaseHolder(holder);
+            if (current && result.session_ended) clearFeedbackDelivery(key, activePolls, deliveredFeedback, events);
+          } finally {
+            done();
+          }
+          return;
+        }
+        restoreClosedFeedback(key, result)
+          .catch((error) => writeLog(`[lavish] closed poll feedback recovery failed: ${error?.message || error}`))
+          .finally(() => {
+            try {
+              releaseHolder(holder);
+            } finally {
+              done();
+            }
+          });
+      };
+      const onFinish = () => settle(true);
+      const onClose = () => settle(res.writableFinished);
+      const onFailure = () => settle(false);
+      res.on("finish", onFinish);
+      res.on("close", onClose);
+      res.on("error", onFailure);
+      holder.delivery = delivery;
+      holder.replace = () => res.destroy();
+      // A response whose socket is already gone has emitted its `close`; nothing would settle it.
+      if (res.destroyed) {
+        settle(false);
+        return;
+      }
+      try {
+        write();
+      } catch (error) {
+        writeError = error;
+        settle(false);
+      }
+    });
+  }
   // Whiteboard sidecar files live next to state.json, keyed by session + diagram.
   const whiteboardStateRoot = path.dirname(stateFile);
   const loadExcalidrawLibraries = createExcalidrawLibraryCache();
@@ -698,6 +776,17 @@ export async function serve({
     res.status(403).send("Forbidden");
     return true;
   }
+
+  // A retiring server still owns its port and answers /health, so a replacement keeps waiting for it,
+  // but it takes no new work: anything accepted now could land after a replacement read state.json.
+  app.use((req, res, next) => {
+    if (!shuttingDown || req.path === "/health") {
+      next();
+      return;
+    }
+    res.set("Connection", "close");
+    res.status(503).json({ error: SHUTTING_DOWN_ERROR });
+  });
 
   if (!allowAnyHostname) {
     app.use((req, res, next) => {
@@ -938,7 +1027,15 @@ export async function serve({
       const { holder, previousPresence, conflict, missing } = await pollOwnershipLock.runExclusive(async () => {
         const currentHolder = activePolls.get(key);
         if (currentHolder && !takeover) return { conflict: listenerConflict(currentHolder, "LISTENER_ACTIVE") };
-        const nextHolder = { key, owner, startedAt: Date.now(), replaced: false, replace: null };
+        const nextHolder = {
+          key,
+          owner,
+          startedAt: Date.now(),
+          replaced: false,
+          replace: null,
+          settled: null,
+          delivery: null,
+        };
         claimedHolder = nextHolder;
         const priorPresence = presenceSignature(key, activePolls, deliveredFeedback);
         if (currentHolder) {
@@ -947,6 +1044,10 @@ export async function serve({
           currentHolder.replaced = true;
           activePolls.set(key, nextHolder);
           currentHolder.replace?.();
+          // A batch the old holder already took is delivered or put back before this round replies
+          // or takes, so the two cannot reorder it. `replace()` cancels a response still being
+          // written, so this waits on local work only, never on a slow client.
+          await currentHolder.settled;
         } else {
           activePolls.set(key, nextHolder);
         }
@@ -973,27 +1074,46 @@ export async function serve({
       }
       const timeoutMs =
         req.query.timeoutMs === undefined ? null : Math.max(0, Math.min(Number(req.query.timeoutMs || 0), 2147483647));
-      const immediate = await store.takeFeedback(key);
-      if (immediate.status !== "waiting") {
-        if (holder.replaced) {
-          await restoreClosedFeedback(key, immediate);
-          detachRequestClose();
-          res.json(listenerConflict(holder, "LISTENER_REPLACED"));
-          releasePollListener(holder, activePolls, deliveredFeedback, events);
-          return;
-        }
-        if (requestClosed || res.writableEnded) {
-          await restoreClosedFeedback(key, immediate);
-          releasePollListener(holder, activePolls, deliveredFeedback, events);
-          detachRequestClose();
-          return;
-        }
-        finishFeedbackDelivery(key, immediate);
-        releasePollListener(holder, activePolls, deliveredFeedback, events);
-        if (immediate.session_ended) clearFeedbackDelivery(key, activePolls, deliveredFeedback, events);
+      // A takeover waits on `holder.settled` until a take this poll made is delivered or put back.
+      let settleTake = () => {};
+      const beginTake = () => {
+        const settled = new Promise((resolve) => {
+          settleTake = () => resolve(undefined);
+        });
+        holder.settled = settled;
+        pollTakes.add(settled);
+        void settled.then(() => pollTakes.delete(settled));
+      };
+      // A retiring server starts no take it would then have to put back after releasing state.json.
+      if (shuttingDown) {
         detachRequestClose();
-        res.json(agentFacingFeedback(immediate));
+        releasePollListener(holder, activePolls, deliveredFeedback, events);
+        res.status(503).json({ error: SHUTTING_DOWN_ERROR });
         return;
+      }
+      beginTake();
+      try {
+        const immediate = await store.takeFeedback(key);
+        if (immediate.status !== "waiting") {
+          if (holder.replaced) {
+            await restoreClosedFeedback(key, immediate);
+            detachRequestClose();
+            res.json(listenerConflict(holder, "LISTENER_REPLACED"));
+            releasePollListener(holder, activePolls, deliveredFeedback, events);
+            return;
+          }
+          if (requestClosed || res.writableEnded) {
+            await restoreClosedFeedback(key, immediate);
+            releasePollListener(holder, activePolls, deliveredFeedback, events);
+            detachRequestClose();
+            return;
+          }
+          detachRequestClose();
+          await writeFeedback(holder, res, immediate, () => res.json(agentFacingFeedback(immediate)));
+          return;
+        }
+      } finally {
+        settleTake();
       }
       if (holder.replaced) {
         detachRequestClose();
@@ -1020,23 +1140,22 @@ export async function serve({
       let timer = null;
       let cleaned = false;
       let responding = false;
-      const cleanup = () => {
-        if (cleaned) return;
-        cleaned = true;
+      // Committing to a final response ends the wait; the holder stays until that response settles.
+      const stopWaiting = () => {
         if (timer) clearTimeout(timer);
         if (heartbeat) clearInterval(heartbeat);
         events.off("feedback", onFeedback);
         events.off("ended", onFeedback);
         events.off("browser-disconnected", onBrowserDisconnected);
-        releasePollListener(holder, activePolls, deliveredFeedback, events);
-        if (!activePolls.has(key)) {
-          clearBrowserDisconnectTimer(key);
-          browserDisconnectPending.delete(key);
-        }
-        refreshIdleTimer();
         cleanupPoll = null;
         detachRequestClose();
         res.off("close", onResponseClose);
+      };
+      const cleanup = () => {
+        if (cleaned) return;
+        cleaned = true;
+        stopWaiting();
+        releaseHolder(holder);
       };
       const respondReplacement = () => {
         if (responding || res.writableEnded) return;
@@ -1051,15 +1170,14 @@ export async function serve({
       };
       holder.replace = respondReplacement;
       const respond = async (forcedResult = null) => {
-        if (responding || res.writableEnded) return;
+        if (responding || res.writableEnded || shuttingDown) return;
         responding = true;
-        let finalSessionEnded = false;
+        beginTake();
         try {
           const result = await store.takeFeedback(key);
           // Feedback or an explicit end that raced the grace timer wins. The disconnect result
           // is only the non-terminal replacement for a poll that would otherwise keep waiting.
           const responseResult = forcedResult && result.status === "waiting" ? forcedResult : result;
-          finalSessionEnded = responseResult?.session_ended === true;
           if (holder.replaced) {
             if (responseResult.status !== "waiting") await restoreClosedFeedback(key, responseResult);
             if (!requestClosed && !res.writableEnded) {
@@ -1072,16 +1190,23 @@ export async function serve({
             await restoreClosedFeedback(key, responseResult);
             return;
           }
-          finishFeedbackDelivery(key, responseResult);
           const agentResponse = agentFacingFeedback(responseResult);
-          if (streamHeartbeat) {
-            res.end(JSON.stringify(agentResponse));
-          } else {
-            res.json(agentResponse);
+          const write = () => {
+            if (streamHeartbeat) {
+              res.end(JSON.stringify(agentResponse));
+            } else {
+              res.json(agentResponse);
+            }
+          };
+          if (responseResult.status !== "feedback") {
+            write();
+            return;
           }
+          stopWaiting();
+          await writeFeedback(holder, res, responseResult, write);
         } finally {
           cleanup();
-          if (finalSessionEnded) clearFeedbackDelivery(key, activePolls, deliveredFeedback, events);
+          settleTake();
         }
       };
       function handleRespondError(error) {
@@ -1972,6 +2097,10 @@ export async function serve({
   }
 
   function handleEventUpgrade(req, socket, head) {
+    if (shuttingDown) {
+      rejectEventUpgrade(socket, 503, "Service Unavailable");
+      return;
+    }
     let pathname;
     try {
       pathname = new URL(String(req.url || ""), "http://lavish.local").pathname;
@@ -2291,18 +2420,40 @@ export async function serve({
       w.close().catch(() => {});
     }
     watchers.clear();
-    let remaining = httpServers.length;
-    const closed = () => {
-      remaining -= 1;
-      if (remaining === 0) shutdownResolve();
-    };
+    // Retire in two steps. Closing every connection first cancels long-polls and responses still
+    // being written, and the takes and put-backs that starts must persist while this server still
+    // owns the port: loopback is the port lock, so until the listeners close no replacement can
+    // start and read or write state.json. Meanwhile /health keeps answering and nothing else does.
+    closeAllHttpConnections();
+    drainPollTakes()
+      .catch((error) => writeLog(`[lavish] shutdown drain failed: ${error?.message || error}`))
+      .finally(() => {
+        let remaining = httpServers.length;
+        const closed = () => {
+          remaining -= 1;
+          if (remaining === 0) shutdownResolve();
+        };
+        for (const httpServer of httpServers) httpServer.close(closed);
+        // Force-close keep-alive sockets so legacy SSE / long-polls don't keep us alive.
+        closeAllHttpConnections();
+      });
+  }
+
+  function closeAllHttpConnections() {
     for (const httpServer of httpServers) {
-      httpServer.close(closed);
-      // Force-close keep-alive sockets so legacy SSE / long-polls don't keep us alive.
       if (typeof httpServer.closeAllConnections === "function") {
         httpServer.closeAllConnections();
       }
     }
+  }
+
+  // Waits for every poll take already running to be delivered or put back, then for the store to
+  // finish whatever writes are queued behind them.
+  async function drainPollTakes() {
+    do {
+      await Promise.all([...pollTakes]);
+      await store.runExclusive(async () => {});
+    } while (pollTakes.size > 0);
   }
 
   // Idle self-shutdown: the timer only runs while nothing is connected. Any live event chrome or
@@ -2821,6 +2972,9 @@ function markFeedbackDelivered(key, activePolls, deliveredFeedback, events) {
 }
 
 function clearFeedbackDelivery(key, activePolls, deliveredFeedback, events) {
+  // A batch still being written belongs to the round this concludes; its finish must not mark it again.
+  const delivery = activePolls.get(key)?.delivery;
+  if (delivery) delivery.concluded = true;
   const previousPresence = computePresence(key, activePolls, deliveredFeedback);
   deliveredFeedback.delete(key);
   const nextPresence = computePresence(key, activePolls, deliveredFeedback);
