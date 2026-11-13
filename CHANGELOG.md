@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.97](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.96...lavish-axi-v0.1.97) (2026-11-13)
+
+
+### Bug Fixes
+
+* **sdk:** keep annotation selectors unique so a click reopens only its own queued note ([#493](https://github.com/kunchenguid/lavish-axi/issues/493)) ([d331d40](https://github.com/kunchenguid/lavish-axi/commit/d331d40561ed2dfac878526e18c6a36c10219bb9))
+* **sdk:** place the reveal marker on the settled target after the smooth scroll ([#491](https://github.com/kunchenguid/lavish-axi/issues/491)) ([b184b58](https://github.com/kunchenguid/lavish-axi/commit/b184b5804e24b9edf618ac8a1c59308a9a2dc8d8))
+
 ## [0.1.96](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.95...lavish-axi-v0.1.96) (2026-10-29)
 
 
