@@ -108,6 +108,31 @@ test("a triple-backtick span inside a list item does not open a fence", () => {
   }
 });
 
+// A fence that opens part-way through an item's text is an inline run, so its closing fence closes
+// that run and opens nothing; the items and paragraphs after it stay what they were.
+test("a fence run opened inside an item's text does not turn the rest of the reply into code", () => {
+  for (const [text, tail] of [
+    [
+      "- Run this: ```sh\n  npm i\n  ```\n- next item\n\nLater paragraph.",
+      "<li>next item</li></ul><p>Later paragraph.</p>",
+    ],
+    ["1. Install deps with ```bash\n  npm i\n  ```\n2. Build.\n\nDone.", "<li>Build.</li></ol><p>Done.</p>"],
+    ["- Install:\n  run ```sh\n  npm i\n  ```\n- next", "<li>next</li></ul>"],
+  ]) {
+    const html = renderChatMarkdown(text);
+    assert.doesNotMatch(html, /<pre>/);
+    assert.ok(html.endsWith(tail), html);
+  }
+});
+
+// CommonMark closes a fenced block when its container ends, so an unclosed fence stops with its item.
+test("an unclosed indented fence ends with its list item", () => {
+  assert.equal(
+    renderChatMarkdown("- run:\n  ```\n  open\n- next\n\nParagraph"),
+    "<ul><li>run:<pre><code>open</code></pre></li><li>next</li></ul><p>Paragraph</p>",
+  );
+});
+
 test("an unterminated indented fence inside a list runs to the end", () => {
   assert.equal(renderChatMarkdown("- run:\n  ```\n  open"), "<ul><li>run:<pre><code>open</code></pre></li></ul>");
 });

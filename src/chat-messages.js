@@ -396,21 +396,21 @@ export function renderChatMarkdown(text) {
         }
         if (fence) {
           const buffer = [];
-          while (i < lines.length && !lines[i].trimStart().startsWith(fence[2])) {
+          for (; i < lines.length; i += 1) {
+            const body = lines[i].trimStart();
+            if (body.startsWith(fence[2])) {
+              i += 1;
+              break;
+            }
+            if (body && lines[i].length - body.length < indent) break;
             buffer.push(stripIndent(lines[i], indent));
-            i += 1;
           }
-          i += 1;
           items.push({ indent, leaf: "code", text: buffer.join("\n") });
         }
-        while (
-          i < lines.length &&
-          lines[i].trim() &&
-          /^\s{2,}/.test(lines[i]) &&
-          !LIST_ITEM.test(lines[i]) &&
-          !LIST_FENCE_OPEN.test(lines[i])
-        ) {
+        while (i < lines.length && lines[i].trim() && /^\s{2,}/.test(lines[i]) && !LIST_ITEM.test(lines[i])) {
           const last = items[items.length - 1];
+          const fenceLine = LIST_FENCE_OPEN.exec(lines[i]);
+          if (fenceLine && (last.leaf === "code" || last.text.split(fenceLine[2]).length % 2 === 1)) break;
           if (last.leaf === "code") items.push({ indent: last.indent, leaf: "text", text: lines[i].trim() });
           else last.text += " " + lines[i].trim();
           i += 1;

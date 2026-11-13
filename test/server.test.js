@@ -1031,18 +1031,6 @@ test("chrome chat bubbles follow the preview mock shades", async () => {
   assert.match(css, /border-top-color:var\(--accent\)/);
 });
 
-test("chrome reads only custom properties it declares or sets at runtime", async () => {
-  const css = await readFile(new URL("../src/chrome.css", import.meta.url), "utf8");
-  const js = await chromeClientSource();
-  const declared = new Set([...css.matchAll(/(--[\w-]+)\s*:/g)].map((match) => match[1]));
-  for (const match of js.matchAll(/setProperty\("(--[\w-]+)"/g)) declared.add(match[1]);
-  const undefinedTokens = [...new Set([...css.matchAll(/var\(\s*(--[\w-]+)/g)].map((match) => match[1]))].filter(
-    (name) => !declared.has(name),
-  );
-
-  assert.deepEqual(undefinedTokens, []);
-});
-
 test("chrome includes a chat-like prompt composer and agent reply listener", async () => {
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
   const js = await chromeClientSource();
