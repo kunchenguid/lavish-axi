@@ -12,6 +12,9 @@ permissions:
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
       - uses: googleapis/release-please-action@v4
         id: release
@@ -59,3 +62,79 @@ jobs:
         env:
           LAVISH_AXI_UMAMI_HOST: https://a.kunchenguid.com
           LAVISH_AXI_UMAMI_WEBSITE_ID: ${{ vars.LAVISH_AXI_UMAMI_WEBSITE_ID }}
+
+  # Publishes Formula/lavish-axi.rb to kunchenguid/homebrew-tap so
+  # `brew install kunchenguid/tap/lavish-axi` tracks each npm release. Needs
+  # a HOMEBREW_TAP_TOKEN secret with contents:write on kunchenguid/homebrew-tap.
+  homebrew:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Update Homebrew formula
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          : "${HOMEBREW_TAP_TOKEN:?Missing HOMEBREW_TAP_TOKEN}"
+          VERSION="${TAG_NAME#lavish-axi-v}"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Unexpected release tag: $TAG_NAME" >&2
+            exit 1
+          fi
+          TARBALL="https://registry.npmjs.org/lavish-axi/-/lavish-axi-${VERSION}.tgz"
+          # The registry can lag a few seconds behind npm publish.
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            if curl -fsSL "$TARBALL" -o "$RUNNER_TEMP/lavish-axi.tgz"; then break; fi
+            if [ "$attempt" = 10 ]; then echo "Could not download $TARBALL" >&2; exit 1; fi
+            sleep 15
+          done
+          SHA256=$(sha256sum "$RUNNER_TEMP/lavish-axi.tgz" | awk '{print $1}')
+          if [[ ! "$SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "Could not compute a valid SHA256 for $TARBALL" >&2
+            exit 1
+          fi
+
+          git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/kunchenguid/homebrew-tap.git" "$RUNNER_TEMP/homebrew-tap"
+          FORMULA="$RUNNER_TEMP/homebrew-tap/Formula/lavish-axi.rb"
+          # A delayed re-run of an older release must not downgrade the tap.
+          if [ -f "$FORMULA" ]; then
+            CURRENT=$(sed -nE 's|.*lavish-axi-([0-9]+\.[0-9]+\.[0-9]+)\.tgz.*|\1|p' "$FORMULA" | head -n 1)
+            if [ -n "$CURRENT" ] && [ "$CURRENT" != "$VERSION" ] \
+              && [ "$(printf '%s\n%s\n' "$CURRENT" "$VERSION" | sort -V | tail -n 1)" = "$CURRENT" ]; then
+              echo "Tap already has lavish-axi $CURRENT, newer than $VERSION; skipping."
+              exit 0
+            fi
+          fi
+          mkdir -p "$RUNNER_TEMP/homebrew-tap/Formula"
+          cat > "$FORMULA" << FORMULA_EOF
+          class LavishAxi < Formula
+            desc "Editor for HTML artifacts"
+            homepage "https://github.com/kunchenguid/lavish-axi"
+            url "${TARBALL}"
+            sha256 "${SHA256}"
+            license "MIT"
+
+            depends_on "node"
+
+            def install
+              system "npm", "install", *std_npm_args
+              bin.install_symlink libexec.glob("bin/*")
+            end
+
+            test do
+              assert_match version.to_s, shell_output("#{bin}/lavish-axi --version")
+            end
+          end
+          FORMULA_EOF
+          cd "$RUNNER_TEMP/homebrew-tap"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/lavish-axi.rb
+          if ! git diff --cached --quiet; then
+            git commit -m "lavish-axi ${VERSION}"
+            git push
+          fi
