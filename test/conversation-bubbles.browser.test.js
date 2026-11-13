@@ -59,6 +59,8 @@ const REPLY = [
   "   ```",
   "2. Check the document counts.",
 ].join("\n");
+// A reply that ends with a heading keeps the heading's own bottom margin, as it always has.
+const TRAILING_HEADING_REPLY = "Rolled back.\n\n## Next steps";
 
 const GROWING_NOTE = Array.from({ length: 8 }, (_, index) => `Line ${index + 1} of the note about the intro.`).join(
   "\n",
@@ -108,6 +110,10 @@ const MEASURE = `() => {
     queuedUrl: queuedUrl ? fit(queuedUrl) : null,
     draft: draft ? { ...fit(draft), text: draft.textContent } : null,
     takeoverWeight: getComputedStyle(document.getElementById("handoffTakeover")).fontWeight,
+    lastBlock: (() => {
+      const block = document.querySelectorAll("#chatLog .bubble.agent .chat-md")[1].lastElementChild;
+      return { text: block.textContent, marginBottom: getComputedStyle(block).marginBottom };
+    })(),
   });
 }`;
 
@@ -183,12 +189,14 @@ test(
       const output = run(process.execPath, ["bin/lavish-axi.js", artifact, "--no-open"], lavishEnv);
       const url = output.match(/url:\s*"([^"]+)"/)?.[1];
       assert.ok(url, output);
-      run(
-        process.execPath,
-        ["bin/lavish-axi.js", "poll", artifact, "--agent-reply", REPLY, "--timeout-ms", "200"],
-        lavishEnv,
-        30_000,
-      );
+      for (const reply of [REPLY, TRAILING_HEADING_REPLY]) {
+        run(
+          process.execPath,
+          ["bin/lavish-axi.js", "poll", artifact, "--agent-reply", reply, "--timeout-ms", "200"],
+          lavishEnv,
+          30_000,
+        );
+      }
 
       open(url);
       run("chrome-devtools-axi", ["emulate", "--viewport", "1440x1000x1"], chromeEnv);
@@ -199,6 +207,7 @@ test(
       const inside = (rect) => rect.left >= g.bubble.left - 0.5 && rect.right <= g.bubble.right + 0.5;
 
       assert.deepEqual(g.firstBlock, { text: "Rollback plan", marginTop: "0px" }, "a leading heading sits flush");
+      assert.deepEqual(g.lastBlock, { text: "Next steps", marginBottom: "4px" }, "a trailing heading is unchanged");
       assertFits("agent reply", g.md);
 
       assert.ok(g.chips.length > 1, `the long path wraps: ${JSON.stringify(g.chips)}`);

@@ -1454,6 +1454,9 @@ body.lavish {
 .chat-md {
   overflow-wrap: anywhere;
 }
+.chat-md > :last-child {
+  margin-bottom: 0;
+}
 .chat-md p {
   margin: 0 0 8px;
 }
@@ -1462,13 +1465,10 @@ body.lavish {
   font-weight: var(--w-semi);
   color: var(--fg);
 }
-/* After the heading rule: same specificity, so source order lets a reply that opens or closes
-   with a heading sit flush like any other block. */
+/* After the heading rule: same specificity, so source order lets a reply that opens with a
+   heading sit flush like any other block. */
 .chat-md > :first-child {
   margin-top: 0;
-}
-.chat-md > :last-child {
-  margin-bottom: 0;
 }
 .chat-md ul,
 .chat-md ol {
