@@ -376,8 +376,8 @@ export function renderChatMarkdown(text) {
       const items = [];
       while (i < lines.length) {
         const item = LIST_ITEM.exec(lines[i]);
-        let fence = null;
-        let indent = 0;
+        let fence;
+        let indent;
         if (item) {
           const ordered = /\d/.test(item[2]);
           const start = ordered ? item[2].replace(/[.)]$/, "").replace(/^0+(?=\d)/, "") : "";
