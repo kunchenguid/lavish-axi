@@ -1744,7 +1744,7 @@ body.layout-gate-active iframe#artifact {
     right: 10px;
     left: 10px;
     width: auto;
-    max-height: min(70vh, 460px);
+    max-height: min(calc(var(--layout-vh, 100vh) * 0.7), 460px);
   }
 }
 /* Phone-width chrome: the artifact takes the whole viewport above a persistent conversation dock,
@@ -1770,7 +1770,7 @@ body.layout-gate-active iframe#artifact {
   }
   .layout {
     height: calc(100vh - var(--bar-h));
-    height: calc(100dvh - var(--bar-h));
+    height: calc(var(--layout-vh, 100dvh) - var(--bar-h));
     grid-template-columns: minmax(0, 1fr);
     /* The second row only reserves the dock's footprint so the artifact is never underneath it;
        the panel itself is fixed. */
@@ -1923,7 +1923,7 @@ body.layout-gate-active iframe#artifact {
     padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
   }
   .chat-attachments {
-    max-height: min(176px, 25dvh);
+    max-height: min(176px, calc(var(--layout-vh, 100dvh) * 0.25));
   }
   .composer .actions {
     position: sticky;
