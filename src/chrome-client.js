@@ -1653,11 +1653,11 @@ function queuedAnchorSelectorsOf(prompt) {
 }
 
 // Tells the artifact which element selectors carry a queued note. Only selectors cross into the
-// frame: the artifact is agent-authored, and the note text stays in the chrome.
+// frame: the artifact is agent-authored, and the note text stays in the chrome. Each selector is
+// listed where its newest note sits, oldest first, so the artifact can prefer an element's newest note.
 function postQueuedAnchors(force = false) {
-  const selectors = [
-    ...new Set(queued.filter((prompt) => isElementAnchoredPrompt(prompt)).flatMap(queuedAnchorSelectorsOf)),
-  ];
+  const anchored = queued.filter((prompt) => isElementAnchoredPrompt(prompt)).flatMap(queuedAnchorSelectorsOf);
+  const selectors = [...new Set(anchored.reverse())].reverse();
   const signature = JSON.stringify(selectors);
   if (!force && signature === postedQueuedAnchors) return;
   postedQueuedAnchors = signature;

@@ -8806,6 +8806,18 @@ test("the artifact learns which elements carry a queued note, never the note its
   assert.deepEqual(JSON.parse(JSON.stringify(anchors)), { type: "lavish:queuedAnchors", selectors: ["main > h2"] });
 });
 
+// The artifact walks the list newest first, so a selector a newer note carries again must sit at
+// that newer note, after a selector queued in between; otherwise the in-between note would win.
+test("the artifact's queued-anchor list places each selector at its newest note", async () => {
+  const chrome = await createChromeHarness();
+  queueHeadingNote(chrome, "Make this heading bigger", "main > h2");
+  queueHeadingNote(chrome, "Make this heading blue", "main > h2:nth-of-type(2)");
+  queueHeadingNote(chrome, "Make this heading bold", "main > h2");
+
+  const anchors = chrome.postedToFrame.filter((message) => message.type === "lavish:queuedAnchors").at(-1);
+  assert.deepEqual(JSON.parse(JSON.stringify(anchors.selectors)), ["main > h2:nth-of-type(2)", "main > h2"]);
+});
+
 test("clicking an annotated element in the artifact opens its queued note", async () => {
   const chrome = await createChromeHarness();
   queueHeadingNote(chrome, "First thought");
@@ -9158,6 +9170,31 @@ test("whiteboard init flags libraries that changed between the libraries and sou
   });
   assert.equal(failed.librariesUnavailable, true);
   assert.equal(JSON.stringify(failed.libraries), "[]");
+});
+
+// A selector past the 240/300-char caps that table-cell.js and layout-warnings.js put on
+// their own target fields still anchors in full: the queued-anchor list and the reopen lookup
+// use `prompt.selector`, which the chrome never shortens.
+test("a queued note with a very long selector is announced and reopened by its full selector", async () => {
+  const chrome = await createChromeHarness();
+  const selector = "html > body > " + Array.from({ length: 120 }, () => "div").join(" > ") + " > td";
+  assert.ok(selector.length > 512);
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: {
+      prompt: "Fix this cell",
+      selector,
+      tag: "td",
+      text: "42",
+      target: { type: "table-cell", selector: selector.slice(0, 240), rowLabel: "", columnLabel: "", text: "42" },
+    },
+  });
+
+  const anchors = chrome.postedToFrame.filter((message) => message.type === "lavish:queuedAnchors").at(-1);
+  assert.deepEqual(JSON.parse(JSON.stringify(anchors)).selectors, [selector]);
+
+  chrome.sendFrameMessage({ type: "lavish:editQueuedAnchor", selector });
+  assert.match(chrome.element("queuedLog").innerHTML, /class="queued-edit-input"[^>]*>Fix this cell</);
 });
 
 // ---- Desktop conversation panel collapse ----

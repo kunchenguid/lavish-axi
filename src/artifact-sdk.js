@@ -482,6 +482,9 @@ export function createArtifactSdk(
   // Selectors the chrome reports as carrying a queued note. A click on one opens that note in the
   // chrome's panel instead of a fresh card; the note's words never enter this document.
   let queuedAnchorSelectors = new Set();
+  // The element each note was queued from, by its selector. A selector is unique only for the
+  // page it was made on, so while that element is still in the page, identity decides the match.
+  const queuedAnchorElements = new Map();
   let shadow = null;
   let counter = 0;
   const ids = new WeakMap();
@@ -799,14 +802,21 @@ export function createArtifactSdk(
   function selector(el) {
     if (!el || !el.tagName) return "";
 
+    // Five levels is the short common case; past it, keep climbing until the chain names only
+    // this element, or an id or the root stops it. Two structurally identical elements would
+    // otherwise share a selector, and a click on one would reopen the other's queued note.
     const parts = [];
     let node = el;
-    while (node && node.nodeType === 1 && parts.length < 5) {
-      let part = node.tagName.toLowerCase();
+    while (node && node.nodeType === 1 && (parts.length < 5 || !selectsOnly(parts))) {
+      let part = node.localName || node.tagName.toLowerCase();
       if (node.id) {
-        part += "#" + CSS.escape(node.id);
-        parts.unshift(part);
-        break;
+        const idPart = part + "#" + CSS.escape(node.id);
+        // Generated pages repeat ids; only an id that names this one element ends the climb.
+        if (selectsOnly([idPart, ...parts])) {
+          parts.unshift(idPart);
+          break;
+        }
+        part = idPart;
       }
 
       const parent = node.parentElement;
@@ -821,12 +831,64 @@ export function createArtifactSdk(
     return parts.join(" > ");
   }
 
+  function rememberQueuedAnchor(note, el) {
+    if (note.target?.type === "text-range") return;
+    if (note.selector && el && typeof WeakRef === "function") queuedAnchorElements.set(note.selector, new WeakRef(el));
+  }
+
+  // Which queued note a click reopens, given the clicked element's `context()`. The clicked
+  // element's own note wins; a click inside a diagram node then finds the node's note, because
+  // the node is one target however deep the click lands. A table cell's note stays on the exact
+  // element clicked.
+  function queuedAnchorFor(el, clicked) {
+    const own = queuedAnchorOf(el, clicked.selector);
+    if (own || clicked.target?.type !== "mermaid-node") return own;
+    const node = mermaidNodeElement(el);
+    return node ? queuedAnchorOf(node, clicked.target.selector) : "";
+  }
+
+  // The queued note that belongs to `el`, whose selector in this page is `freshSelector`. A note
+  // queued in this page matches only the element it was queued from, and stops matching anything
+  // once that element leaves the page: whatever now matches its selector is a different element.
+  // A note this page never saw queued (the frame reloaded) falls back to its selector: the same
+  // string, or a selector whose only match in the page is `el`. The chrome lists each selector at
+  // its newest note and opens the newest note carrying it, so the list is walked newest first: an
+  // element whose selector changed between two notes reopens the newer one.
+  function queuedAnchorOf(el, freshSelector) {
+    for (const candidate of [...queuedAnchorSelectors].reverse()) {
+      const ref = queuedAnchorElements.get(candidate);
+      if (ref) {
+        // A removed element is never the one clicked, so its note matches nothing until a reload.
+        if (ref.deref() === el) return candidate;
+        continue;
+      }
+      if (candidate === freshSelector) return candidate;
+      try {
+        const matches = document.querySelectorAll(candidate);
+        if (matches.length === 1 && matches[0] === el) return candidate;
+      } catch {
+        // A stored selector the browser cannot parse simply matches nothing.
+      }
+    }
+    return "";
+  }
+
+  function selectsOnly(parts) {
+    try {
+      return document.querySelectorAll(parts.join(" > ")).length === 1;
+    } catch {
+      return true;
+    }
+  }
+
   // `table` is opt-in because resolving a cell's row and column walks the whole table, while
   // `snapshot()` calls this for every element in the document and reads only uid/tag/text.
-  function context(el, { table = false } = {}) {
+  // `selector` is opt-out because generating one can query the whole document to prove it is
+  // unique, and `snapshot()` reads only uid/tag/text for every element.
+  function context(el, { table = false, withSelector = true } = {}) {
     const base = {
       uid: uid(el),
-      selector: selector(el),
+      selector: withSelector ? selector(el) : "",
       tag: (el.tagName || "").toLowerCase(),
       text: (el.innerText || el.textContent || "").trim().replace(/\s+/g, " ").slice(0, 240),
     };
@@ -837,7 +899,7 @@ export function createArtifactSdk(
     const tableTarget = table ? tableCellTarget(el, selector) : null;
     if (tableTarget) base.target = tableTarget;
 
-    const mermaidNode = mermaidNodeFrom(el, selector);
+    const mermaidNode = mermaidNodeFrom(el, withSelector ? selector : null);
     if (mermaidNode) {
       base.tag = "mermaid-node";
       base.text = mermaidNode.label || base.text;
@@ -1244,6 +1306,7 @@ export function createArtifactSdk(
       if (attachments.length) item.attachments = attachments;
     }
 
+    if (options.element) rememberQueuedAnchor(item, options.element);
     postArtifactMessage("lavish:queuePrompt", { prompt: item });
   }
 
@@ -1261,7 +1324,7 @@ export function createArtifactSdk(
     function walk(el, depth) {
       if (!(el instanceof Element) || depth > 6 || isLavishUi(el)) return;
 
-      const c = context(el);
+      const c = context(el, { withSelector: false });
       const name = c.text ? ' "' + c.text.slice(0, 80).replace(/"/g, "'") + '"' : "";
       lines.push("  ".repeat(depth) + "uid=" + c.uid + " " + c.tag + name);
       for (const child of el.children) walk(child, depth + 1);
@@ -2429,6 +2492,7 @@ export function createArtifactSdk(
       // refers to), but never queue an empty card.
       if (prompt || readyAttachments.length) {
         queuePrompt(prompt, { ...c, queueKey: "", attachments: readyAttachments });
+        rememberQueuedAnchor(c, target);
       }
       closeCard();
       return true;
@@ -2524,7 +2588,8 @@ export function createArtifactSdk(
       queuedAnchorSelectors = new Set(Array.isArray(msg.selectors) ? msg.selectors.map(String) : []);
     }
     if (msg.type === "lavish:annotateElement" && annotationMode) {
-      const target = safeQuerySelector(msg.selector);
+      const queued = queuedAnchorElements.get(msg.selector)?.deref();
+      const target = queued && queued.isConnected !== false ? queued : safeQuerySelector(msg.selector);
       if (target) showAnnotationCard(target);
     }
   });
@@ -2676,11 +2741,10 @@ export function createArtifactSdk(
         ignoreNextClick = false;
         return;
       }
-      // The clicked element's own selector, plus its diagram node's, so any click inside a node
-      // finds the node's note again. A table cell's note stays on the exact element clicked.
+      // The clicked element's own note, then its diagram node's, so any click inside a node finds
+      // the node's note again. A table cell's note stays on the exact element clicked.
       const clicked = queuedAnchorSelectors.size ? context(event.target) : null;
-      const node = clicked?.target?.type === "mermaid-node" ? clicked.target.selector : "";
-      const selector = [clicked?.selector, node].find((candidate) => candidate && queuedAnchorSelectors.has(candidate));
+      const selector = clicked ? queuedAnchorFor(event.target, clicked) : "";
       if (selector) {
         closeCard();
         postArtifactMessage("lavish:editQueuedAnchor", { selector });
