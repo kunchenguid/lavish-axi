@@ -1205,6 +1205,7 @@ body.lavish {
 .bubble.note .note-draft {
   margin-top: 6px;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
   user-select: text;
 }
 .bubble.note .note-warning {

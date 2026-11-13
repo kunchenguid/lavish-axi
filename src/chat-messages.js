@@ -30,7 +30,7 @@ export function normalizePromptId(value) {
 const LIST_ITEM = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/;
 const BLOCK_START = /^(?:```|~~~|#{1,6}\s|\s*(?:[-*+]|\d+[.)])\s+)/;
 const FENCE_OPEN = /^(```|~~~)/;
-const INDENTED_FENCE_OPEN = /^(\s+)(```|~~~)/;
+const LIST_FENCE_OPEN = /^(\s*)(```|~~~)(?!.*\2)/;
 // Inline code longer than this may not fit one line of the 360px column, so it may wrap; shorter
 // spans (a date, a flag, a file name) stay on one line.
 const LONG_INLINE_CODE = 24;
@@ -375,21 +375,27 @@ export function renderChatMarkdown(text) {
     if (LIST_ITEM.test(line)) {
       const items = [];
       while (i < lines.length) {
-        if (LIST_ITEM.test(lines[i])) {
-          const item = LIST_ITEM.exec(lines[i]);
+        const item = LIST_ITEM.exec(lines[i]);
+        let fence = null;
+        let indent = 0;
+        if (item) {
           const ordered = /\d/.test(item[2]);
           const start = ordered ? item[2].replace(/[.)]$/, "").replace(/^0+(?=\d)/, "") : "";
-          items.push({ indent: item[1].length, ordered, start, text: item[3] });
+          fence = LIST_FENCE_OPEN.exec(item[3]);
+          indent = lines[i].length - item[3].length;
+          items.push({ indent: item[1].length, ordered, start, text: fence ? "" : item[3] });
           i += 1;
         } else {
           // An indented fence belongs to the item above it, even after a blank line.
           let next = i;
           while (next < lines.length && !lines[next].trim()) next += 1;
-          const fence = next < lines.length ? INDENTED_FENCE_OPEN.exec(lines[next]) : null;
-          if (!fence) break;
-          const indent = fence[1].length;
-          const buffer = [];
+          fence = next < lines.length ? LIST_FENCE_OPEN.exec(lines[next]) : null;
+          if (!fence || !fence[1]) break;
+          indent = fence[1].length;
           i = next + 1;
+        }
+        if (fence) {
+          const buffer = [];
           while (i < lines.length && !lines[i].trimStart().startsWith(fence[2])) {
             buffer.push(stripIndent(lines[i], indent));
             i += 1;
@@ -402,7 +408,7 @@ export function renderChatMarkdown(text) {
           lines[i].trim() &&
           /^\s{2,}/.test(lines[i]) &&
           !LIST_ITEM.test(lines[i]) &&
-          !INDENTED_FENCE_OPEN.test(lines[i])
+          !LIST_FENCE_OPEN.test(lines[i])
         ) {
           const last = items[items.length - 1];
           if (last.leaf === "code") items.push({ indent: last.indent, leaf: "text", text: lines[i].trim() });

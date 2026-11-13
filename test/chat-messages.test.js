@@ -86,6 +86,28 @@ test("an indented fence keeps its place among nested items and following text", 
   );
 });
 
+// CommonMark lets a fenced block be an item's first block, opened right after the marker.
+test("a fence opened on a list marker line is code inside that item and closes there", () => {
+  assert.equal(
+    renderChatMarkdown("- ```sh\n  npm i\n  ```\n- next item\n\nLater paragraph."),
+    "<ul><li><pre><code>npm i</code></pre></li><li>next item</li></ul><p>Later paragraph.</p>",
+  );
+  assert.equal(
+    renderChatMarkdown("1. ~~~\n   make\n   ~~~\n   then deploy\n2. two"),
+    "<ol><li><pre><code>make</code></pre>then deploy</li><li>two</li></ol>",
+  );
+});
+
+// A backtick fence's info string cannot hold a backtick, so a line that closes its own run is
+// inline text, and the items after it stay items.
+test("a triple-backtick span inside a list item does not open a fence", () => {
+  for (const text of ["- ```npm i``` installs\n- next", "- a\n  ```npm i``` installs\n- next"]) {
+    const html = renderChatMarkdown(text);
+    assert.doesNotMatch(html, /<pre>/);
+    assert.match(html, /<li>next<\/li><\/ul>$/);
+  }
+});
+
 test("an unterminated indented fence inside a list runs to the end", () => {
   assert.equal(renderChatMarkdown("- run:\n  ```\n  open"), "<ul><li>run:<pre><code>open</code></pre></li></ul>");
 });
