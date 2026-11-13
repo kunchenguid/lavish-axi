@@ -133,6 +133,15 @@ test("an unclosed indented fence ends with its list item", () => {
   );
 });
 
+// CommonMark: a fence's own indentation is only removed from its lines; a line still inside the
+// item's text stays in the block even when it is less indented than the fence.
+test("a fence indented past its item's text keeps lines that are less indented than the fence", () => {
+  const html = renderChatMarkdown("- Run:\n    ```sh\n  echo ok\n    ```\n- Next");
+  assert.equal(html, "<ul><li>Run:<pre><code>echo ok</code></pre></li><li>Next</li></ul>");
+  assert.equal(html.match(/<pre>/g).length, 1);
+  assert.doesNotMatch(html, /<code><\/code>/);
+});
+
 test("an unterminated indented fence inside a list runs to the end", () => {
   assert.equal(renderChatMarkdown("- run:\n  ```\n  open"), "<ul><li>run:<pre><code>open</code></pre></li></ul>");
 });

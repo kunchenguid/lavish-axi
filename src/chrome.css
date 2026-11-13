@@ -1503,23 +1503,26 @@ body.lavish {
   border-radius: var(--radius-sm);
   padding: 0 5px;
   color: var(--cream-200);
-  white-space: nowrap;
+  /* A short span moves to the next line whole; one wider than the whole line wraps inside its chip.
+     The negative margin keeps the chip's border out of the line height, as an inline chip's is. */
+  display: inline-block;
+  max-width: 100%;
+  margin-block: -1px;
 }
 /* A span too long to keep on one line (src/chat-messages.js marks it) wraps, and every fragment
    keeps its own border and padding instead of an open-ended chip. */
 .chat-md code.chat-code-long {
-  white-space: normal;
+  display: inline;
   overflow-wrap: anywhere;
   -webkit-box-decoration-break: clone;
   box-decoration-break: clone;
 }
 .chat-md pre code {
+  display: inline;
   background: none;
   border: 0;
   padding: 0;
   font-size: inherit;
-  /* A fenced block keeps its line breaks and its pre-wrap wrapping, not inline code's nowrap. */
-  white-space: inherit;
 }
 .chat-md a {
   color: var(--accent);

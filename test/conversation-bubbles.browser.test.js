@@ -61,6 +61,9 @@ const REPLY = [
 ].join("\n");
 // A reply that ends with a heading keeps the heading's own bottom margin, as it always has.
 const TRAILING_HEADING_REPLY = "Rolled back.\n\n## Next steps";
+// A short span, three lists deep: at the narrowest supported width it is wider than its line.
+const DEEP_SPAN = "2026-12-03 09:30:00 UTC";
+const DEEP_REPLY = "- Cutover\n  - Search\n    - Window: `" + DEEP_SPAN + "`";
 
 const GROWING_NOTE = Array.from({ length: 8 }, (_, index) => `Line ${index + 1} of the note about the intro.`).join(
   "\n",
@@ -82,7 +85,15 @@ const SEED = `() => {
   return "ok";
 }`;
 
+// How many lines a code span's own text sits on, whether its chip is inline or a block.
+const TEXT_LINES = `(el) => {
+  const range = document.createRange();
+  range.selectNodeContents(el.firstChild);
+  return new Set([...range.getClientRects()].map((rect) => Math.round(rect.top))).size;
+}`;
+
 const MEASURE = `() => {
+  const textLines = ${TEXT_LINES};
   const box = (el) => { const r = el.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, left: r.left, right: r.right }; };
   const fit = (el) => ({ scrollWidth: el.scrollWidth, clientWidth: el.clientWidth });
   const agent = document.querySelector("#chatLog .bubble.agent");
@@ -105,7 +116,7 @@ const MEASURE = `() => {
     firstBlock: { text: md.firstElementChild.textContent, marginTop: getComputedStyle(md.firstElementChild).marginTop },
     md: fit(md),
     chips,
-    shortCodeLines: codes.filter((el) => el.textContent.endsWith(" 09:30")).map((el) => el.getClientRects().length),
+    shortCodeLines: codes.filter((el) => el.textContent.endsWith(" 09:30")).map(textLines),
     fenced: fenced ? { ...box(fenced), ...fit(fenced), text: fenced.textContent, emptyCodes: item.querySelectorAll("code:empty").length } : null,
     queuedUrl: queuedUrl ? fit(queuedUrl) : null,
     draft: draft ? { ...fit(draft), text: draft.textContent } : null,
@@ -114,6 +125,27 @@ const MEASURE = `() => {
       const block = document.querySelectorAll("#chatLog .bubble.agent .chat-md")[1].lastElementChild;
       return { text: block.textContent, marginBottom: getComputedStyle(block).marginBottom };
     })(),
+  });
+}`;
+
+const NARROW = `() => {
+  const textLines = ${TEXT_LINES};
+  const code = [...document.querySelectorAll("#chatLog .chat-md li li li code")].find((el) => el.textContent === ${JSON.stringify(DEEP_SPAN)});
+  const md = code.closest(".chat-md");
+  const bubble = code.closest(".bubble").getBoundingClientRect();
+  const chip = code.getBoundingClientRect();
+  const range = document.createRange();
+  range.selectNodeContents(code.firstChild);
+  const text = [...range.getClientRects()];
+  return JSON.stringify({
+    viewport: innerWidth,
+    bubble: { left: bubble.left, right: bubble.right },
+    chip: { left: chip.left, right: chip.right },
+    textLeft: Math.min(...text.map((rect) => rect.left)),
+    textRight: Math.max(...text.map((rect) => rect.right)),
+    lines: textLines(code),
+    md: { scrollWidth: md.scrollWidth, clientWidth: md.clientWidth },
+    shortCodeLines: [...document.querySelectorAll("#chatLog .chat-md p code")].filter((el) => el.textContent.endsWith(" 09:30")).map(textLines),
   });
 }`;
 
@@ -189,7 +221,7 @@ test(
       const output = run(process.execPath, ["bin/lavish-axi.js", artifact, "--no-open"], lavishEnv);
       const url = output.match(/url:\s*"([^"]+)"/)?.[1];
       assert.ok(url, output);
-      for (const reply of [REPLY, TRAILING_HEADING_REPLY]) {
+      for (const reply of [REPLY, TRAILING_HEADING_REPLY, DEEP_REPLY]) {
         run(
           process.execPath,
           ["bin/lavish-axi.js", "poll", artifact, "--agent-reply", reply, "--timeout-ms", "200"],
@@ -256,6 +288,28 @@ test(
         assert.ok(capped.height > growing.height, `a longer note gets a taller editor: ${JSON.stringify(capped)}`);
         assert.ok(capped.scrollHeight > capped.clientHeight, "the rest of a very long note scrolls inside the editor");
       }
+
+      // At the narrowest supported width a short span may be wider than its line: it wraps inside
+      // its chip instead of running past the bubble, and the spans that fit stay on one line.
+      run("chrome-devtools-axi", ["emulate", "--viewport", "320x640x1"], chromeEnv);
+      wait(1000);
+      const narrow = evaluate(NARROW);
+      assert.equal(narrow.viewport, 320);
+      assert.ok(narrow.lines > 1, `the deep span is wider than its line and wraps: ${JSON.stringify(narrow)}`);
+      assert.ok(
+        narrow.chip.left >= narrow.bubble.left - 0.5 && narrow.chip.right <= narrow.bubble.right + 0.5,
+        `the wrapped short span stays inside its bubble: ${JSON.stringify(narrow)}`,
+      );
+      assert.ok(
+        narrow.textLeft - narrow.chip.left >= 4 && narrow.chip.right - narrow.textRight >= 4,
+        `its text keeps the chip's padding on both sides: ${JSON.stringify(narrow)}`,
+      );
+      assertFits("narrow agent reply", narrow.md);
+      assert.deepEqual(
+        narrow.shortCodeLines,
+        WINDOWS.map(() => 1),
+        "a short span that fits its line stays on one line at the narrowest width",
+      );
     } finally {
       run(process.execPath, ["bin/lavish-axi.js", "stop", "--port", String(port)], lavishEnv, 15_000);
       run("chrome-devtools-axi", ["stop"], chromeEnv);

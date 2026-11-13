@@ -32,7 +32,7 @@ const BLOCK_START = /^(?:```|~~~|#{1,6}\s|\s*(?:[-*+]|\d+[.)])\s+)/;
 const FENCE_OPEN = /^(```|~~~)/;
 const LIST_FENCE_OPEN = /^(\s*)(```|~~~)(?!.*\2)/;
 // Inline code longer than this may not fit one line of the 360px column, so it may wrap; shorter
-// spans (a date, a flag, a file name) stay on one line.
+// spans (a date, a flag, a file name) stay on one line unless they are wider than the whole line.
 const LONG_INLINE_CODE = 24;
 const HEADING = /^(#{1,6})\s+(.+?)(?:\s+#+)?\s*$/;
 
@@ -378,12 +378,16 @@ export function renderChatMarkdown(text) {
         const item = LIST_ITEM.exec(lines[i]);
         let fence;
         let indent;
+        // The block ends with its item, at the first line less indented than the item's text (or
+        // than the fence, when the fence sits left of that text).
+        let end;
         if (item) {
           const ordered = /\d/.test(item[2]);
           const start = ordered ? item[2].replace(/[.)]$/, "").replace(/^0+(?=\d)/, "") : "";
           fence = LIST_FENCE_OPEN.exec(item[3]);
           indent = lines[i].length - item[3].length;
-          items.push({ indent: item[1].length, ordered, start, text: fence ? "" : item[3] });
+          end = indent;
+          items.push({ indent: item[1].length, content: indent, ordered, start, text: fence ? "" : item[3] });
           i += 1;
         } else {
           // An indented fence belongs to the item above it, even after a blank line.
@@ -392,6 +396,8 @@ export function renderChatMarkdown(text) {
           fence = next < lines.length ? LIST_FENCE_OPEN.exec(lines[next]) : null;
           if (!fence || !fence[1]) break;
           indent = fence[1].length;
+          const owner = items.findLast((entry) => !entry.leaf && entry.indent < indent);
+          end = Math.min(indent, owner ? owner.content : indent);
           i = next + 1;
         }
         if (fence) {
@@ -402,7 +408,7 @@ export function renderChatMarkdown(text) {
               i += 1;
               break;
             }
-            if (body && lines[i].length - body.length < indent) break;
+            if (body && lines[i].length - body.length < end) break;
             buffer.push(stripIndent(lines[i], indent));
           }
           items.push({ indent, leaf: "code", text: buffer.join("\n") });
