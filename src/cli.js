@@ -43,6 +43,7 @@ import {
   LOOPBACK_HOST,
   resolveConcreteListenHosts,
   serverLogFile,
+  stateDir,
   stateFile,
   stateId,
 } from "./paths.js";
@@ -2274,10 +2275,16 @@ export function createServerSpawnOptions(logFd = null) {
   const stdio = /** @type {import("node:child_process").StdioOptions} */ (
     logFd === null ? "ignore" : ["ignore", logFd, logFd]
   );
+  // The server is shared machine-wide, so it must not pin the first caller's folder: tools that
+  // reap processes by working directory when deleting a worktree would stop every open session.
+  // The state dir is passed absolute so a relative LAVISH_AXI_STATE_DIR is not re-resolved
+  // against that new cwd.
+  const dir = path.resolve(stateDir());
   return {
     detached: true,
     stdio,
-    env: { ...process.env, LAVISH_AXI_NO_OPEN: "1" },
+    cwd: dir,
+    env: { ...process.env, LAVISH_AXI_STATE_DIR: dir, LAVISH_AXI_NO_OPEN: "1" },
   };
 }
 
