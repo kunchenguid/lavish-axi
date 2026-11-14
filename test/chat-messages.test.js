@@ -61,6 +61,100 @@ test("an unterminated fence runs to the end without throwing", () => {
   assert.equal(renderChatMarkdown("```\nopen"), "<pre><code>open</code></pre>");
 });
 
+test("a fenced block indented inside a list item renders as code inside that item", () => {
+  const html = renderChatMarkdown(
+    "1. Renamed the section.\n2. Added the rollback command:\n   ```sh\n   curl -X POST https://search.internal/_aliases\n     -d @rollback.json\n   ```\n3. Shortened the intro.",
+  );
+  assert.equal(
+    html,
+    "<ol><li>Renamed the section.</li><li>Added the rollback command:<pre><code>curl -X POST https://search.internal/_aliases\n  -d @rollback.json</code></pre></li><li>Shortened the intro.</li></ol>",
+  );
+  assert.doesNotMatch(html, /<code><\/code>/);
+});
+
+test("an indented fence after a blank line still belongs to its list item", () => {
+  assert.equal(
+    renderChatMarkdown("- Run:\n\n  ~~~\n  pnpm migrate\n\n  pnpm seed\n  ~~~\n- Then check the counts."),
+    "<ul><li>Run:<pre><code>pnpm migrate\n\npnpm seed</code></pre></li><li>Then check the counts.</li></ul>",
+  );
+});
+
+test("an indented fence keeps its place among nested items and following text", () => {
+  assert.equal(
+    renderChatMarkdown("- a\n  - b\n  ```\n  <x>\n  ```\n  after **code**\n- c"),
+    "<ul><li>a<ul><li>b</li></ul><pre><code>&lt;x&gt;</code></pre>after <strong>code</strong></li><li>c</li></ul>",
+  );
+});
+
+// CommonMark lets a fenced block be an item's first block, opened right after the marker.
+test("a fence opened on a list marker line is code inside that item and closes there", () => {
+  assert.equal(
+    renderChatMarkdown("- ```sh\n  npm i\n  ```\n- next item\n\nLater paragraph."),
+    "<ul><li><pre><code>npm i</code></pre></li><li>next item</li></ul><p>Later paragraph.</p>",
+  );
+  assert.equal(
+    renderChatMarkdown("1. ~~~\n   make\n   ~~~\n   then deploy\n2. two"),
+    "<ol><li><pre><code>make</code></pre>then deploy</li><li>two</li></ol>",
+  );
+});
+
+// A backtick fence's info string cannot hold a backtick, so a line that closes its own run is
+// inline text, and the items after it stay items.
+test("a triple-backtick span inside a list item does not open a fence", () => {
+  for (const text of ["- ```npm i``` installs\n- next", "- a\n  ```npm i``` installs\n- next"]) {
+    const html = renderChatMarkdown(text);
+    assert.doesNotMatch(html, /<pre>/);
+    assert.match(html, /<li>next<\/li><\/ul>$/);
+  }
+});
+
+// A fence that opens part-way through an item's text is an inline run, so its closing fence closes
+// that run and opens nothing; the items and paragraphs after it stay what they were.
+test("a fence run opened inside an item's text does not turn the rest of the reply into code", () => {
+  for (const [text, tail] of [
+    [
+      "- Run this: ```sh\n  npm i\n  ```\n- next item\n\nLater paragraph.",
+      "<li>next item</li></ul><p>Later paragraph.</p>",
+    ],
+    ["1. Install deps with ```bash\n  npm i\n  ```\n2. Build.\n\nDone.", "<li>Build.</li></ol><p>Done.</p>"],
+    ["- Install:\n  run ```sh\n  npm i\n  ```\n- next", "<li>next</li></ul>"],
+  ]) {
+    const html = renderChatMarkdown(text);
+    assert.doesNotMatch(html, /<pre>/);
+    assert.ok(html.endsWith(tail), html);
+  }
+});
+
+// CommonMark closes a fenced block when its container ends, so an unclosed fence stops with its item.
+test("an unclosed indented fence ends with its list item", () => {
+  assert.equal(
+    renderChatMarkdown("- run:\n  ```\n  open\n- next\n\nParagraph"),
+    "<ul><li>run:<pre><code>open</code></pre></li><li>next</li></ul><p>Paragraph</p>",
+  );
+});
+
+// CommonMark: a fence's own indentation is only removed from its lines; a line still inside the
+// item's text stays in the block even when it is less indented than the fence.
+test("a fence indented past its item's text keeps lines that are less indented than the fence", () => {
+  const html = renderChatMarkdown("- Run:\n    ```sh\n  echo ok\n    ```\n- Next");
+  assert.equal(html, "<ul><li>Run:<pre><code>echo ok</code></pre></li><li>Next</li></ul>");
+  assert.equal(html.match(/<pre>/g).length, 1);
+  assert.doesNotMatch(html, /<code><\/code>/);
+});
+
+test("an unterminated indented fence inside a list runs to the end", () => {
+  assert.equal(renderChatMarkdown("- run:\n  ```\n  open"), "<ul><li>run:<pre><code>open</code></pre></li></ul>");
+});
+
+test("long inline code is marked so it can wrap with its chip intact; short code is not", () => {
+  assert.equal(
+    renderChatMarkdown(
+      "ship on `2026-12-03` from `src/chat-messages.js` or `/Users/me/projects/search/index/products-v2.json`",
+    ),
+    '<p>ship on <code>2026-12-03</code> from <code>src/chat-messages.js</code> or <code class="chat-code-long">/Users/me/projects/search/index/products-v2.json</code></p>',
+  );
+});
+
 test("inline code protects the markers inside it", () => {
   assert.equal(
     renderChatMarkdown("use `**literal**` and **bold** and *it* and _it2_ and snake_case_name"),

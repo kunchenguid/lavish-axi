@@ -1205,6 +1205,7 @@ body.lavish {
 .bubble.note .note-draft {
   margin-top: 6px;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
   user-select: text;
 }
 .bubble.note .note-warning {
@@ -1240,6 +1241,8 @@ body.lavish {
 }
 .bubble-text {
   white-space: pre-wrap;
+  /* The panel hides horizontal overflow, so a long URL or path must wrap or its tail is lost. */
+  overflow-wrap: anywhere;
 }
 /* Consecutive items from one send sit closer, so a batch reads as a group. */
 .bubble.user + .bubble.user {
@@ -1306,6 +1309,15 @@ body.lavish {
   padding: 8px;
   font: inherit;
   box-sizing: border-box;
+}
+/* Where supported, the editor grows with the note up to a cap, so a long note is not half hidden
+   while it is revised. Elsewhere it keeps the fixed minimum and the free vertical resize. */
+@supports (field-sizing: content) {
+  .queued-edit-input {
+    field-sizing: content;
+    max-height: 40vh;
+    overflow-y: auto;
+  }
 }
 .queued-edit-actions {
   display: flex;
@@ -1439,8 +1451,8 @@ body.lavish {
   font-variant-numeric: tabular-nums;
 }
 /* Agent prose: the Markdown subset src/chat-messages.js renders, sized for a 360px column. */
-.chat-md > :first-child {
-  margin-top: 0;
+.chat-md {
+  overflow-wrap: anywhere;
 }
 .chat-md > :last-child {
   margin-bottom: 0;
@@ -1452,6 +1464,11 @@ body.lavish {
   margin: 12px 0 4px;
   font-weight: var(--w-semi);
   color: var(--fg);
+}
+/* After the heading rule: same specificity, so source order lets a reply that opens with a
+   heading sit flush like any other block. */
+.chat-md > :first-child {
+  margin-top: 0;
 }
 .chat-md ul,
 .chat-md ol {
@@ -1486,8 +1503,22 @@ body.lavish {
   border-radius: var(--radius-sm);
   padding: 0 5px;
   color: var(--cream-200);
+  /* A short span moves to the next line whole; one wider than the whole line wraps inside its chip.
+     The negative margin keeps the chip's border out of the line height, as an inline chip's is. */
+  display: inline-block;
+  max-width: 100%;
+  margin-block: -1px;
+}
+/* A span too long to keep on one line (src/chat-messages.js marks it) wraps, and every fragment
+   keeps its own border and padding instead of an open-ended chip. */
+.chat-md code.chat-code-long {
+  display: inline;
+  overflow-wrap: anywhere;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
 }
 .chat-md pre code {
+  display: inline;
   background: none;
   border: 0;
   padding: 0;
@@ -1545,7 +1576,7 @@ body.lavish {
   color: var(--accent);
   cursor: pointer;
   font: inherit;
-  font-weight: var(--w-semibold);
+  font-weight: var(--w-semi);
   padding: 0;
   white-space: nowrap;
 }
