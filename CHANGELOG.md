@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.98](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.97...lavish-axi-v0.1.98) (2026-11-14)
+
+
+### Bug Fixes
+
+* **cli:** run the shared server from the state dir, not the caller's folder ([#497](https://github.com/kunchenguid/lavish-axi/issues/497)) ([589681f](https://github.com/kunchenguid/lavish-axi/commit/589681fe1e85f365c8f0747202f8d40fb606e13a))
+
 ## [0.1.97](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.96...lavish-axi-v0.1.97) (2026-11-13)
 
 
