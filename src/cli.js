@@ -97,7 +97,7 @@ export const POLL_WAKE_PATH_RULES = Object.freeze([
   "If it returns browser_disconnected, the review window stayed disconnected past its reconnect grace period but the session remains resumable; ask the user whether to reopen or end it, and do neither uninvited.",
 ]);
 export const POLL_SEND_AND_END_RULE =
-  "`Send & End` ends the session. Its final feedback is still delivered once. After that response, polling stops, and the agent must not reopen the session uninvited.";
+  '`Send & End` ends the session. Its final feedback is still delivered once. With no comment, it delivers "Review accepted. No comments.", which means the user accepts the review as-is. After that response, polling stops, and the agent must not reopen the session uninvited.';
 export const POLL_AGENT_REPLY_RULE =
   "Keep the reply concise. Only when a longer reply is genuinely necessary, use Markdown structure - blank-line paragraphs, `- ` / `1. ` lists, `## ` headings - so it renders scannably instead of a wall of text, and pass that body with `--agent-reply-file <path>` (`-` reads stdin) so newlines survive quoting.";
 const POLL_AGENT_REPLY_HELP_POINTER =
