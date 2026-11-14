@@ -96,6 +96,9 @@ async function createChromeHarness({
   // chrome's sheet breakpoint, with `setMobile` flipping it the way a resize would. Left off, the
   // window has no matchMedia at all, which is the desktop the other tests run against.
   mobile = false,
+  // The desktop window width the chrome reads to keep the artifact usable beside a widened panel;
+  // `resizeWindow` changes it the way dragging the browser window would.
+  viewportWidth = 1440,
 } = {}) {
   const source = await readFile(sourceUrl, "utf8");
   // Seed sessionStorage before the client boots, to model a tab whose queue was
@@ -201,7 +204,14 @@ async function createChromeHarness({
           return [...classes].join(" ");
         },
       },
-      style: {},
+      style: {
+        setProperty(name, value) {
+          this[name] = String(value);
+        },
+        removeProperty(name) {
+          delete this[name];
+        },
+      },
       setAttribute(name, value) {
         this[name] = String(value);
       },
@@ -454,6 +464,7 @@ async function createChromeHarness({
     document: {
       // The tab as the server served it: the artifact's title and its icon link.
       title: "Plan \u00b7 Lavish",
+      documentElement: element("documentElement"),
       body: element("body"),
       head: { appendChild: (link) => (tabIcon = link) },
       querySelector: (selector) => (selector === 'link[rel~="icon"]' ? tabIcon : null),
@@ -511,6 +522,7 @@ async function createChromeHarness({
       },
     },
     window: {
+      innerWidth: viewportWidth,
       clearTimeout: fakeClearTimeout,
       setTimeout: fakeSetTimeout,
       addEventListener(type, handler) {
@@ -699,6 +711,18 @@ async function createChromeHarness({
       head.dispatch("pointerup", { pointerId, clientY: toY });
       // A completed pointer sequence is followed by a click on the same target.
       head.dispatch("click", {});
+    },
+    resizeWindow(width) {
+      context.window.innerWidth = width;
+      for (const handler of windowListeners.get("resize") || []) handler({});
+    },
+    // A pointer drag on the panel's resize handle from one x to another, as the browser delivers it.
+    dragPanelEdge(fromX, toX, { pointerId = 1 } = {}) {
+      const handle = element("panelResizer");
+      handle.dispatch("pointerdown", { pointerId, clientX: fromX, button: 0, preventDefault() {} });
+      handle.dispatch("pointermove", { pointerId, clientX: fromX + (toX - fromX) / 2 });
+      handle.dispatch("pointermove", { pointerId, clientX: toX });
+      handle.dispatch("pointerup", { pointerId, clientX: toX });
     },
     cancelDock(fromY, moveY, cancelY, { pointerId = 1 } = {}) {
       const head = element("panelHead");
@@ -9361,6 +9385,247 @@ test("the stored desktop collapse never hides the phone sheet", async () => {
   chrome.setMobile(true);
   assert.equal(sidebarState(chrome).collapsed, false);
   assert.equal(sidebarState(chrome).stored, "1", "crossing the breakpoint does not rewrite the preference");
+});
+
+// ---- Desktop conversation panel resize ----
+
+function panelWidthState(chrome) {
+  const handle = chrome.element("panelResizer");
+  return {
+    width: Number(handle["aria-valuenow"]),
+    min: Number(handle["aria-valuemin"]),
+    max: Number(handle["aria-valuemax"]),
+    css: chrome.element("documentElement").style["--panel-resized-w"] ?? null,
+    stored: chrome.localStore.get("lavish-axi:panel-width") ?? null,
+  };
+}
+
+function pressPanelEdge(chrome, key) {
+  const event = {
+    key,
+    defaultPrevented: false,
+    preventDefault() {
+      this.defaultPrevented = true;
+    },
+  };
+  chrome.element("panelResizer").dispatch("keydown", event);
+  return event;
+}
+
+test("the panel starts at its default width, which is also the narrowest it goes", async () => {
+  const chrome = await createChromeHarness();
+  assert.deepEqual(panelWidthState(chrome), { width: 360, min: 360, max: 1120, css: null, stored: null });
+
+  // Dragging the edge right, into the panel, cannot shrink it below the default.
+  chrome.dragPanelEdge(1080, 1300);
+  assert.deepEqual(panelWidthState(chrome), { width: 360, min: 360, max: 1120, css: null, stored: null });
+});
+
+test("dragging the panel edge toward the artifact widens the panel and remembers the width", async () => {
+  const chrome = await createChromeHarness();
+  chrome.dragPanelEdge(1080, 900);
+
+  const state = panelWidthState(chrome);
+  assert.equal(state.width, 540);
+  assert.equal(state.css, "540px");
+  // A viewer-wide preference like the collapse, never per-tab sessionStorage.
+  assert.equal(state.stored, "540");
+  assert.equal(chrome.storage.has("lavish-axi:panel-width"), false);
+  assert.equal(chrome.element("body").classList.contains("panel-resizing"), false, "the drag ended");
+
+  // Dragging back to the default edge forgets the preference instead of storing the default.
+  chrome.dragPanelEdge(900, 1080);
+  assert.deepEqual(panelWidthState(chrome), { width: 360, min: 360, max: 1120, css: null, stored: null });
+});
+
+test("the artifact frame stops a drag before the panel crowds it out", async () => {
+  const chrome = await createChromeHarness({ viewportWidth: 900 });
+  chrome.dragPanelEdge(540, 0);
+
+  const state = panelWidthState(chrome);
+  // 900px window minus the 320px the artifact always keeps.
+  assert.equal(state.max, 580);
+  assert.equal(state.width, 580);
+  assert.equal(state.css, "580px");
+  assert.equal(state.stored, "580");
+});
+
+test("the artifact frame cannot swallow the pointer while the panel edge is dragged", async () => {
+  const chrome = await createChromeHarness();
+  const handle = chrome.element("panelResizer");
+  handle.capturedPointer = null;
+  handle.setPointerCapture = (pointerId) => (handle.capturedPointer = pointerId);
+
+  const press = {
+    pointerId: 7,
+    clientX: 1080,
+    button: 0,
+    defaultPrevented: false,
+    preventDefault() {
+      this.defaultPrevented = true;
+    },
+  };
+  handle.dispatch("pointerdown", press);
+  assert.equal(handle.capturedPointer, 7);
+  // Preventing the press would also cancel the mousedown that focuses the handle for the arrow keys.
+  assert.equal(press.defaultPrevented, false);
+  // chrome.css turns off the iframe's pointer events while this class is set.
+  assert.equal(chrome.element("body").classList.contains("panel-resizing"), true);
+  // Moves from another pointer are not this drag.
+  handle.dispatch("pointermove", { pointerId: 8, clientX: 700 });
+  assert.equal(panelWidthState(chrome).width, 360);
+  handle.dispatch("pointermove", { pointerId: 7, clientX: 1000 });
+  assert.equal(panelWidthState(chrome).width, 440);
+  assert.equal(panelWidthState(chrome).stored, null, "the width is stored when the drag ends, not on every move");
+
+  handle.dispatch("lostpointercapture", { pointerId: 7 });
+  assert.equal(chrome.element("body").classList.contains("panel-resizing"), false);
+  assert.equal(panelWidthState(chrome).stored, "440");
+});
+
+test("a secondary-button press on the panel edge does not start a drag", async () => {
+  const chrome = await createChromeHarness();
+  const handle = chrome.element("panelResizer");
+  handle.dispatch("pointerdown", { pointerId: 1, clientX: 1080, button: 2, preventDefault() {} });
+  handle.dispatch("pointermove", { pointerId: 1, clientX: 800 });
+  handle.dispatch("pointerup", { pointerId: 1, clientX: 800 });
+  assert.equal(panelWidthState(chrome).width, 360);
+  assert.equal(chrome.element("body").classList.contains("panel-resizing"), false);
+});
+
+test("the panel edge resizes from the keyboard within the same limits", async () => {
+  const chrome = await createChromeHarness();
+
+  assert.equal(pressPanelEdge(chrome, "ArrowLeft").defaultPrevented, true);
+  assert.equal(panelWidthState(chrome).width, 376);
+  assert.equal(panelWidthState(chrome).stored, "376");
+  pressPanelEdge(chrome, "ArrowRight");
+  pressPanelEdge(chrome, "ArrowRight");
+  assert.equal(panelWidthState(chrome).width, 360, "the default width is the floor");
+  assert.equal(panelWidthState(chrome).stored, null);
+
+  chrome.dragPanelEdge(1080, 0);
+  assert.equal(panelWidthState(chrome).width, 1120);
+  pressPanelEdge(chrome, "ArrowLeft");
+  assert.equal(panelWidthState(chrome).width, 1120, "the artifact's share is the ceiling");
+  pressPanelEdge(chrome, "ArrowRight");
+  assert.equal(panelWidthState(chrome).width, 1104);
+  assert.equal(panelWidthState(chrome).stored, "1104");
+
+  assert.equal(pressPanelEdge(chrome, "Enter").defaultPrevented, false, "other keys pass through");
+});
+
+test("a stored panel width applies on load in every review and is clamped, not rewritten, by a narrow window", async () => {
+  const localStore = new Map([["lavish-axi:panel-width", "700"]]);
+  const chrome = await createChromeHarness({
+    localStore,
+    sessionData: { ...defaultSessionData, key: "another-review" },
+  });
+  assert.equal(panelWidthState(chrome).width, 700);
+  assert.equal(panelWidthState(chrome).css, "700px");
+
+  chrome.resizeWindow(900);
+  assert.equal(panelWidthState(chrome).width, 580);
+  assert.equal(panelWidthState(chrome).css, "580px");
+  assert.equal(panelWidthState(chrome).stored, "700", "the window, not the viewer, narrowed it");
+
+  chrome.resizeWindow(1440);
+  assert.equal(panelWidthState(chrome).width, 700);
+});
+
+test("an arrow key that cannot change the clamped width leaves the stored width alone", async () => {
+  const chrome = await createChromeHarness({
+    viewportWidth: 900,
+    localStore: new Map([["lavish-axi:panel-width", "700"]]),
+  });
+  assert.equal(panelWidthState(chrome).width, 580, "the 900px window clamps the stored 700px");
+
+  // Already at the ceiling: widening is a no-op, so the viewer's 700px must survive it.
+  assert.equal(pressPanelEdge(chrome, "ArrowLeft").defaultPrevented, true);
+  assert.equal(panelWidthState(chrome).width, 580);
+  assert.equal(panelWidthState(chrome).stored, "700");
+  chrome.resizeWindow(1440);
+  assert.equal(panelWidthState(chrome).width, 700, "the stored width comes back when the window grows");
+
+  // A key that does change the width still stores it.
+  chrome.resizeWindow(900);
+  pressPanelEdge(chrome, "ArrowRight");
+  assert.equal(panelWidthState(chrome).width, 564);
+  assert.equal(panelWidthState(chrome).stored, "564");
+});
+
+test("a drag that ends at the width it started from leaves the stored width alone", async () => {
+  const chrome = await createChromeHarness({
+    viewportWidth: 900,
+    localStore: new Map([["lavish-axi:panel-width", "700"]]),
+  });
+
+  // Pushing the edge further into the clamp moves the pointer but not the panel.
+  chrome.dragPanelEdge(320, 100);
+  assert.equal(panelWidthState(chrome).width, 580);
+  assert.equal(panelWidthState(chrome).stored, "700");
+
+  // So does a drag that wanders off and comes back to where it started.
+  const handle = chrome.element("panelResizer");
+  handle.dispatch("pointerdown", { pointerId: 2, clientX: 320, button: 0 });
+  handle.dispatch("pointermove", { pointerId: 2, clientX: 400 });
+  handle.dispatch("pointermove", { pointerId: 2, clientX: 320 });
+  handle.dispatch("pointerup", { pointerId: 2, clientX: 320 });
+  assert.equal(panelWidthState(chrome).stored, "700");
+
+  chrome.resizeWindow(1440);
+  assert.equal(panelWidthState(chrome).width, 700);
+});
+
+for (const [label, value] of [
+  ["a non-number", "wide"],
+  ["a fraction", "512.5"],
+  ["a negative number", "-500"],
+  ["a width below the default", "200"],
+  ["an empty string", ""],
+]) {
+  test(`a stored panel width that is ${label} falls back to the default`, async () => {
+    const chrome = await createChromeHarness({ localStore: new Map([["lavish-axi:panel-width", value]]) });
+    assert.equal(panelWidthState(chrome).width, 360);
+    assert.equal(panelWidthState(chrome).css, null);
+  });
+}
+
+test("the panel still resizes when the browser refuses localStorage", async () => {
+  const chrome = await createChromeHarness({ localStorageThrows: true });
+  assert.equal(panelWidthState(chrome).width, 360);
+  chrome.dragPanelEdge(1080, 880);
+  assert.equal(panelWidthState(chrome).width, 560);
+  assert.equal(panelWidthState(chrome).css, "560px");
+  pressPanelEdge(chrome, "ArrowRight");
+  assert.equal(panelWidthState(chrome).width, 544);
+  chrome.dragPanelEdge(880, 1300);
+  assert.equal(panelWidthState(chrome).width, 360);
+  assert.equal(panelWidthState(chrome).css, null);
+});
+
+test("collapsing and showing the panel brings back the width it was dragged to", async () => {
+  const chrome = await createChromeHarness();
+  chrome.dragPanelEdge(1080, 780);
+  assert.equal(panelWidthState(chrome).width, 660);
+
+  chrome.element("sidebarToggle").dispatch("click", {});
+  assert.equal(sidebarState(chrome).collapsed, true);
+  assert.equal(panelWidthState(chrome).stored, "660", "collapsing does not forget the width");
+
+  chrome.element("sidebarToggle").dispatch("click", {});
+  assert.equal(sidebarState(chrome).collapsed, false);
+  assert.equal(panelWidthState(chrome).width, 660);
+  assert.equal(panelWidthState(chrome).css, "660px");
+});
+
+test("the panel edge ignores drags and keys at phone width", async () => {
+  const chrome = await createChromeHarness({ mobile: true });
+  chrome.dragPanelEdge(300, 100);
+  assert.equal(pressPanelEdge(chrome, "ArrowLeft").defaultPrevented, false);
+  assert.equal(panelWidthState(chrome).width, 360);
+  assert.equal(panelWidthState(chrome).stored, null);
+  assert.equal(chrome.element("body").classList.contains("panel-resizing"), false);
 });
 
 // ---- Tab title and icon from the artifact (lavish:documentMeta) ----
