@@ -107,6 +107,7 @@ const designAssetUrls = {
   },
 };
 
+const SESSION_KEY_PATTERN = /^[0-9a-f]{16}$/;
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60_000;
 const WHITEBOARD_CHANNEL_TOKEN_TTL_MS = 5 * 60_000;
 const NETWORK_RECONCILE_CACHE_MS = 1_000;
@@ -836,6 +837,10 @@ export async function serve({
         return;
       }
       const url = shouldDisableLayoutGateOpen(req.body || {}) ? appendNoGateParam(sessionUrl) : sessionUrl;
+      // Read before the upsert: the CLI skips opening another tab only when this session was
+      // already open and a review browser is attached to it right now. A first publish, a
+      // reopened ended session, and a session with no live review tab all still open one.
+      const browserConnected = Boolean(existing && existing.status !== "ended" && hasLiveEventClient(key));
       const session = await store.upsertSession(file, sessionUrl);
       if (existing?.status === "ended") {
         clearFeedbackDelivery(key, activePolls, deliveredFeedback, events);
@@ -848,6 +853,7 @@ export async function serve({
         file,
         url,
         status: "opened",
+        browser_connected: browserConnected,
         ...networkWarningField(),
       });
     } catch (error) {
@@ -1454,12 +1460,28 @@ export async function serve({
 
   app.post("/api/end", async (req, res, next) => {
     try {
-      const file = await canonicalFile(req.body.file);
-      const key = sessionKey(file);
+      // Ends by artifact path, or by session key so a session whose HTML file is gone (and so
+      // cannot be realpath'd) can still be ended. A key is an identifier, not a credential: this
+      // grants nothing `/api/:key/end` does not already allow, and the end is still agent-initiated.
+      const hasKey = req.body?.key !== undefined;
+      let key;
+      if (hasKey) {
+        key = typeof req.body.key === "string" ? req.body.key.trim() : "";
+        if (!SESSION_KEY_PATTERN.test(key)) {
+          res.status(400).json({ status: "error", error: "key must be a 16-character hex session key" });
+          return;
+        }
+        if (!(await store.findByKey(key))) {
+          res.status(404).json({ status: "not-found", error: "session not found" });
+          return;
+        }
+      } else {
+        key = sessionKey(await canonicalFile(req.body.file));
+      }
       const session = await store.endSession(key, "agent");
       clearFeedbackDelivery(key, activePolls, deliveredFeedback, events);
       events.emit("ended", key, session?.ended_by);
-      res.json({ status: "ended" });
+      res.json({ status: "ended", ...(hasKey && session?.file ? { key, file: session.file } : {}) });
       await shutdownIfNoLiveSessions();
     } catch (error) {
       next(error);
