@@ -6576,6 +6576,22 @@ test("extractArtifactHead pulls a data-URI favicon and title from the artifact h
   assert.equal(title, "Weekly Board");
 });
 
+test("extractArtifactHead ignores a <title> mentioned inside an HTML comment", () => {
+  const artifact = `<!doctype html><html><head>
+    <!-- Run title (appears in <title> and the header meta) -->
+    <title>Real Board</title>
+    </head><body></body></html>`;
+  assert.equal(extractArtifactHead(artifact).title, "Real Board");
+
+  const multiline = `<head><!--
+    <title>Draft</title>
+    -->
+    <title>Final</title></head>`;
+  assert.equal(extractArtifactHead(multiline).title, "Final");
+
+  assert.equal(extractArtifactHead("<head><!-- <title>Only in a comment</title> --></head>").title, "");
+});
+
 test("extractArtifactHead handles shortcut icon and absolute hrefs", () => {
   const artifact = `<head><link rel="shortcut icon" href="https://example.com/fav.ico"></head>`;
   const { faviconTag } = extractArtifactHead(artifact);
