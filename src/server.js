@@ -2993,8 +2993,11 @@ export function extractArtifactHead(html) {
     faviconTag = `<link rel="icon" href="${safeHref}">`;
   }
   let title = "";
-  const titleMatch = head.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-  if (titleMatch) title = titleMatch[1].replace(/\s+/g, " ").trim();
+  // A comment may mention <title> (templates do), and script/style text is raw, so a "<!--" there is
+  // no comment. Skip complete comments and whole script/style elements; the first <title> left wins.
+  const titleScan = /<!--[\s\S]*?-->|<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>|<title[^>]*>([\s\S]*?)<\/title>/gi;
+  const titleMatch = [...head.matchAll(titleScan)].find((match) => match[2] !== undefined);
+  if (titleMatch) title = titleMatch[2].replace(/\s+/g, " ").trim();
   return { faviconTag, title };
 }
 
