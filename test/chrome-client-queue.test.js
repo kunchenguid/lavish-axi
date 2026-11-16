@@ -6392,6 +6392,17 @@ test("re-queueing a whiteboard keeps the earlier unsent note", async () => {
     chrome.queued()[0].prompt,
     /^Frontend: bump font size\n\nBackend: add a cache\n\nFor Whiteboard edits to diagram 1, keep the cache\n\nAlso check the SDK\n\nWhiteboard edits to diagram 1 /,
   );
+
+  // A correction saved in the queued bubble survives the next re-queue.
+  const generated = chrome.queued()[0].prompt.slice(chrome.queued()[0].prompt.lastIndexOf("Whiteboard edits"));
+  chrome.element("queuedLog").dispatch("click", { target: queuedLogNode(["bubble", "queued"], 0) });
+  typeIntoQueuedEdit(chrome, "Backend: do not add a cache\n\n" + generated);
+  chrome.element("queuedLog").dispatch("click", { target: queuedLogNode(["queued-edit-save"], 0) });
+  await queueNote("Rename the SDK", ["Added text A"]);
+  assert.match(
+    chrome.queued()[0].prompt,
+    /^Backend: do not add a cache\n\nRename the SDK\n\nWhiteboard edits to diagram 1 \(mermaid-1\):\nAdded text A\n/,
+  );
 });
 
 test("artifact relays cannot invoke whiteboard persistence", async () => {

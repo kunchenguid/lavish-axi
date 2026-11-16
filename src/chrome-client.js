@@ -1604,11 +1604,22 @@ function commitQueuedEdit() {
     queued.splice(index, 1);
     afterQueuedPromptRemoved();
   } else {
+    if (typeof prompt[internalWhiteboardNoteField] === "string") syncWhiteboardNote(prompt, text);
     // In place, not replaced: the send bookkeeping tracks notes by object identity.
     prompt.prompt = text;
     persistQueuedPrompts();
   }
   return true;
+}
+
+// A re-queue rebuilds the whiteboard prompt from its stored note, so a saved edit must update that
+// note too. The note is the text before the generated heading; with no heading left, all of it.
+function syncWhiteboardNote(prompt, text) {
+  const note = prompt[internalWhiteboardNoteField];
+  const generated = String(prompt.prompt || "").slice(note ? note.length + 2 : 0);
+  const heading = generated.slice(0, generated.indexOf("\n") + 1);
+  const at = heading ? text.lastIndexOf(heading) : -1;
+  prompt[internalWhiteboardNoteField] = (at === -1 ? text : text.slice(0, at)).trim();
 }
 
 function saveQueuedEdit() {
