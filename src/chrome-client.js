@@ -3980,7 +3980,21 @@ async function queueWhiteboardFeedback(index, message, mode) {
     });
     if (!response.ok) throw new Error("failed to write whiteboard feedback files");
     const files = await response.json();
-    const note = String(message.note || "").slice(0, 4000);
+    const queueKey = "whiteboard:" + index;
+    // Re-queueing replaces the earlier unsent prompt, so carry its note forward
+    // instead of dropping it.
+    const earlier = queued.find((item) => promptQueueKey(item) === queueKey && !isPromptSending(item));
+    const earlierText = String(earlier?.prompt || "");
+    const earlierNote = earlierText.slice(0, Math.max(earlierText.indexOf("Whiteboard edits to diagram "), 0)).trim();
+    const newNote = String(message.note || "")
+      .slice(0, 4000)
+      .trim();
+    const note =
+      !earlierNote || newNote.includes(earlierNote)
+        ? newNote
+        : earlierNote.includes(newNote)
+          ? earlierNote
+          : earlierNote + "\n\n" + newNote;
     const summary = whiteboardSummaryText(message.summaryLines);
     const promptText =
       (note ? note + "\n\n" : "") +
@@ -4012,7 +4026,7 @@ async function queueWhiteboardFeedback(index, message, mode) {
           },
           // Re-queueing the same diagram's whiteboard before sending replaces the
           // earlier unsent prompt instead of stacking duplicates.
-          [internalQueueKeyField]: "whiteboard:" + index,
+          [internalQueueKeyField]: queueKey,
         },
         preparation,
       )

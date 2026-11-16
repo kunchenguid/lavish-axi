@@ -750,6 +750,42 @@ function clampLine(line) {
   return truncate(line, SUMMARY_MAX_LINE_CHARS);
 }
 
+function isSubgraph(el) {
+  return Array.isArray(el.groupIds) && el.groupIds.includes(`subgraph_group_${el.id}`);
+}
+
+// Where an added item sits, in Mermaid terms: the labeled shapes whose box holds
+// its center, innermost first, then the nearest other labeled shape when the
+// innermost box is a subgraph or nothing holds the item.
+function locationOf(el, elements, boundText) {
+  const [minX, minY, maxX, maxY] = elementBounds(el);
+  const cx = (minX + maxX) / 2;
+  const cy = (minY + maxY) / 2;
+  const shapes = elements
+    .filter((other) => other !== el && isNodeLabelContainer(other) && elementLabel(other, boundText))
+    .map((other) => ({ other, box: elementBounds(other) }));
+  const name = (other) => `"${truncate(elementLabel(other, boundText), 40)}" (${other.id})`;
+  const area = ([x0, y0, x1, y1]) => (x1 - x0) * (y1 - y0);
+  const holders = shapes
+    .filter(({ box }) => cx >= box[0] && cx <= box[2] && cy >= box[1] && cy <= box[3])
+    .sort((a, b) => area(a.box) - area(b.box));
+  let where = holders.map(({ other }, i) => ` ${i ? "in" : "inside"} ${name(other)}`).join("");
+  if (!holders.length || isSubgraph(holders[0].other)) {
+    let nearest = null;
+    let best = Infinity;
+    for (const { other, box } of shapes) {
+      if (holders.some((holder) => holder.other === other)) continue;
+      const distance = Math.hypot(Math.max(box[0] - cx, 0, cx - box[2]), Math.max(box[1] - cy, 0, cy - box[3]));
+      if (distance < best) {
+        best = distance;
+        nearest = other;
+      }
+    }
+    if (nearest) where += `${where ? "," : ""} near ${name(nearest)}`;
+  }
+  return where;
+}
+
 function arrowEndpoints(el, elementsMap, boundText) {
   const start = el.startBinding?.elementId ? elementsMap.get(el.startBinding.elementId) : null;
   const end = el.endBinding?.elementId ? elementsMap.get(el.endBinding.elementId) : null;
@@ -795,12 +831,14 @@ export function summarizeSceneEdits(baselineElements, editedElements, { maxLines
     }
     if (el.type === "freedraw") {
       stats.drawn += 1;
-      lines.push(clampLine(`Drew a freehand mark near (${Math.round(el.x)}, ${Math.round(el.y)})`));
+      const where = locationOf(el, edited, editedText) || ` near (${Math.round(el.x)}, ${Math.round(el.y)})`;
+      lines.push(clampLine(`Drew a freehand mark${where}`));
       continue;
     }
     stats.added += 1;
     const endpoints = el.type === "arrow" || el.type === "line" ? arrowEndpoints(el, editedMap, editedText) : "";
-    lines.push(clampLine(`Added ${describeElement(el, editedText)}${endpoints}`));
+    const where = endpoints || locationOf(el, edited, editedText);
+    lines.push(clampLine(`Added ${describeElement(el, editedText)}${where}`));
   }
 
   for (const { ref, x, y } of addedItems.values()) {
