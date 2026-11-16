@@ -778,10 +778,18 @@ function locationOf(box, isSelf, elements, boundText) {
     .sort((a, b) => area(a.box) - area(b.box));
   let where = holders.map(({ other }, i) => ` ${i ? "in" : "inside"} ${name(other)}`).join("");
   if (!holders.length || isSubgraph(holders[0].other)) {
+    const sectionBox = holders.length ? holders[0].box : null;
     let nearest = null;
     let best = Infinity;
     for (const { other, box } of shapes) {
       if (holders.some((holder) => holder.other === other)) continue;
+      const otherCx = (box[0] + box[2]) / 2;
+      const otherCy = (box[1] + box[3]) / 2;
+      if (
+        sectionBox &&
+        (otherCx < sectionBox[0] || otherCx > sectionBox[2] || otherCy < sectionBox[1] || otherCy > sectionBox[3])
+      )
+        continue;
       const distance = Math.hypot(Math.max(box[0] - cx, 0, cx - box[2]), Math.max(box[1] - cy, 0, cy - box[3]));
       if (distance < best) {
         best = distance;

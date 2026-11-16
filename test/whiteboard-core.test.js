@@ -418,6 +418,46 @@ test("summarizeSceneEdits places added items inside their nodes and subgraphs", 
   ]);
 });
 
+test("summarizeSceneEdits keeps nearby labels within the containing section", () => {
+  const section = (id, x) => rect(id, { x, y: 0, width: 300, height: 200, groupIds: [`subgraph_group_${id}`] });
+  const baseline = [
+    section("FE", 0),
+    boundLabel("FE-label", "FE", "Frontend"),
+    rect("SDK", { x: 20, y: 130, width: 80, height: 40, groupIds: ["subgraph_group_FE"] }),
+    boundLabel("SDK-label", "SDK", "Client SDK"),
+    section("BE", 300),
+    boundLabel("BE-label", "BE", "Backend"),
+    rect("API", { x: 310, y: 130, width: 80, height: 40, groupIds: ["subgraph_group_BE"] }),
+    boundLabel("API-label", "API", "Orders API"),
+  ];
+  const additions = [
+    {
+      added: { id: "mark", type: "freedraw", x: 270, y: 140, points: [[0, 0], [10, 10]] },
+      expected: 'Drew a freehand mark inside "Frontend" (FE), near "Client SDK" (SDK)',
+    },
+    {
+      added: { id: "item", type: "text", text: "revise", x: 270, y: 140, width: 10, height: 10 },
+      expected: 'Added text "revise" (item) inside "Frontend" (FE), near "Client SDK" (SDK)',
+    },
+    {
+      added: rect("library", { x: 270, y: 140, width: 10, height: 10, customData: { lavishLibraryRef: "sys/Server" } }),
+      expected: 'Added library item sys/Server inside "Frontend" (FE), near "Client SDK" (SDK)',
+    },
+  ];
+  for (const { added, expected } of additions) {
+    assert.deepEqual(summarizeSceneEdits(baseline, [...structuredClone(baseline), added]).lines, [expected]);
+  }
+
+  const noFrontendNode = baseline.filter((el) => el.id !== "SDK" && el.id !== "SDK-label");
+  assert.deepEqual(
+    summarizeSceneEdits(noFrontendNode, [
+      ...structuredClone(noFrontendNode),
+      { id: "mark", type: "freedraw", x: 270, y: 140, points: [[0, 0], [10, 10]] },
+    ]).lines,
+    ['Drew a freehand mark inside "Frontend" (FE)'],
+  );
+});
+
 test("summarizeSceneEdits places a dropped library item, and falls back to coordinates with no labeled shape", () => {
   const baseline = [rect("API", { x: 0, y: 0, width: 300, height: 200 }), boundLabel("API-label", "API", "Orders API")];
   const ref = { lavishLibraryRef: "aws/AWS Lambda" };
