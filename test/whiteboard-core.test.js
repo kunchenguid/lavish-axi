@@ -432,7 +432,16 @@ test("summarizeSceneEdits keeps nearby labels within the containing section", ()
   ];
   const additions = [
     {
-      added: { id: "mark", type: "freedraw", x: 270, y: 140, points: [[0, 0], [10, 10]] },
+      added: {
+        id: "mark",
+        type: "freedraw",
+        x: 270,
+        y: 140,
+        points: [
+          [0, 0],
+          [10, 10],
+        ],
+      },
       expected: 'Drew a freehand mark inside "Frontend" (FE), near "Client SDK" (SDK)',
     },
     {
@@ -452,7 +461,16 @@ test("summarizeSceneEdits keeps nearby labels within the containing section", ()
   assert.deepEqual(
     summarizeSceneEdits(noFrontendNode, [
       ...structuredClone(noFrontendNode),
-      { id: "mark", type: "freedraw", x: 270, y: 140, points: [[0, 0], [10, 10]] },
+      {
+        id: "mark",
+        type: "freedraw",
+        x: 270,
+        y: 140,
+        points: [
+          [0, 0],
+          [10, 10],
+        ],
+      },
     ]).lines,
     ['Drew a freehand mark inside "Frontend" (FE)'],
   );
