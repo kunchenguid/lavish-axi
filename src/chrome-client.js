@@ -1615,10 +1615,9 @@ function commitQueuedEdit() {
 // A re-queue rebuilds the whiteboard prompt from its stored note, so a saved edit must update that
 // note too. The note is the text before the generated heading; with no heading left, all of it.
 function syncWhiteboardNote(prompt, text) {
-  const note = prompt[internalWhiteboardNoteField];
-  const generated = String(prompt.prompt || "").slice(note ? note.length + 2 : 0);
-  const heading = generated.slice(0, generated.indexOf("\n") + 1);
-  const at = heading ? text.lastIndexOf(heading) : -1;
+  const target = prompt.target || {};
+  const heading = whiteboardHeading(Number(target.diagramIndex) || 0, target.diagramId) + "\n";
+  const at = text.lastIndexOf(heading);
   prompt[internalWhiteboardNoteField] = (at === -1 ? text : text.slice(0, at)).trim();
 }
 
@@ -3970,6 +3969,10 @@ function whiteboardSummaryText(summaryLines) {
     .join("\n");
 }
 
+function whiteboardHeading(index, diagramId) {
+  return "Whiteboard edits to diagram " + (index + 1) + (diagramId ? " (" + diagramId + ")" : "") + ":";
+}
+
 async function queueWhiteboardFeedback(index, message, mode) {
   const preparation = beginFeedbackPreparation();
   if (!preparation) {
@@ -4011,10 +4014,8 @@ async function queueWhiteboardFeedback(index, message, mode) {
     const summary = whiteboardSummaryText(message.summaryLines);
     const promptText =
       (note ? note + "\n\n" : "") +
-      "Whiteboard edits to diagram " +
-      (index + 1) +
-      (diagramId ? " (" + diagramId + ")" : "") +
-      ":\n" +
+      whiteboardHeading(index, diagramId) +
+      "\n" +
       (summary || "(no summary)") +
       "\n\nEdited scene JSON: " +
       String(files.scene_path || "") +
