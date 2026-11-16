@@ -4005,12 +4005,11 @@ async function queueWhiteboardFeedback(index, message, mode) {
     const newNote = String(message.note || "")
       .slice(0, 4000)
       .trim();
-    const note =
-      !earlierNote || newNote.includes(earlierNote)
-        ? newNote
-        : earlierNote.includes(newNote)
-          ? earlierNote
-          : earlierNote + "\n\n" + newNote;
+    // A note is a repeat only when it matches one whole earlier note: "approve
+    // this" and "disapprove this" are two instructions though one contains the other.
+    const sep = "\n\n";
+    const repeated = (sep + earlierNote + sep).includes(sep + newNote + sep);
+    const note = !earlierNote ? newNote : !newNote || repeated ? earlierNote : earlierNote + sep + newNote;
     const summary = whiteboardSummaryText(message.summaryLines);
     const promptText =
       (note ? note + "\n\n" : "") +

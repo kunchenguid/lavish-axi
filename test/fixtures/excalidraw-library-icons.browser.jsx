@@ -198,7 +198,7 @@ async function insertFromLibraryPanel(elements) {
     throw new Error("inserted item elements do not share a group");
   }
   const summary = summarizeSceneEdits(elements, after);
-  if (summary.lines.length !== 1 || !summary.lines[0].startsWith("Added library item fixture/Gear near")) {
+  if (summary.lines.length !== 1 || !/^Added library item fixture\/Gear (inside|near) /.test(summary.lines[0])) {
     throw new Error(`unexpected summary: ${JSON.stringify(summary.lines)}`);
   }
   return { panelItems, dropped: dropped.length, summary: summary.lines[0] };

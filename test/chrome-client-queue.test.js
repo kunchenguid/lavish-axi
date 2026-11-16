@@ -9517,3 +9517,43 @@ test("a window that is not the artifact frame cannot set the tab", async () => {
   }
   assert.equal(chrome.tab().title, "Plan \u00b7 Lavish");
 });
+
+test("re-queueing a whiteboard keeps a note that only contains the earlier one", async () => {
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url) => {
+      if (String(url).includes("/whiteboard-channel") || String(url).includes("/mermaid-sources")) {
+        return whiteboardFetch(url);
+      }
+      if (String(url).endsWith("/whiteboard/0/feedback-files")) {
+        return { ok: true, json: async () => ({ scene_path: "/tmp/review.excalidraw", preview_path: "" }) };
+      }
+      return { ok: true, json: async () => ({ whiteboard: null }) };
+    },
+  });
+  const whiteboard = await initializeInlineWhiteboard(chrome);
+  const queueNote = async (note) => {
+    chrome.sendInlineWhiteboardMessage(whiteboard, {
+      type: "lavish-whiteboard:queueFeedback",
+      diagramIndex: 0,
+      channelId: "inline-channel",
+      note,
+      summaryLines: ["Added text A"],
+      sourceHash: "hash",
+      scene: { elements: [], appState: {}, files: {} },
+      pngDataUrl: "data:image/png;base64,AA==",
+    });
+    await flushPromises();
+    await flushPromises();
+  };
+
+  await queueNote("approve this");
+  await queueNote("disapprove this");
+  assert.match(chrome.queued()[0].prompt, /^approve this\n\ndisapprove this\n\nWhiteboard edits to diagram 1 /);
+
+  await queueNote("approve");
+  await queueNote("");
+  assert.match(
+    chrome.queued()[0].prompt,
+    /^approve this\n\ndisapprove this\n\napprove\n\nWhiteboard edits to diagram 1 /,
+  );
+});

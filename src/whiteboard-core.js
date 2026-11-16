@@ -756,16 +756,23 @@ function isSubgraph(el) {
 
 // Where an added item sits, in Mermaid terms: the labeled shapes whose box holds
 // its center, innermost first, then the nearest other labeled shape when the
-// innermost box is a subgraph or nothing holds the item.
-function locationOf(el, elements, boundText) {
-  const [minX, minY, maxX, maxY] = elementBounds(el);
+// innermost box is a subgraph or nothing holds the item. A scene with no labeled
+// shape to name falls back to the item's top-left coordinates.
+/**
+ * @param {number[]} box
+ * @param {(other: any) => boolean} isSelf
+ * @param {any[]} elements
+ * @param {Map<string, string>} boundText
+ */
+function locationOf(box, isSelf, elements, boundText) {
+  const [minX, minY, maxX, maxY] = box;
   const cx = (minX + maxX) / 2;
   const cy = (minY + maxY) / 2;
   const shapes = elements
-    .filter((other) => other !== el && isNodeLabelContainer(other) && elementLabel(other, boundText))
+    .filter((other) => !isSelf(other) && isNodeLabelContainer(other) && elementLabel(other, boundText))
     .map((other) => ({ other, box: elementBounds(other) }));
   const name = (other) => `"${truncate(elementLabel(other, boundText), 40)}" (${other.id})`;
-  const area = ([x0, y0, x1, y1]) => (x1 - x0) * (y1 - y0);
+  const area = (/** @type {number[]} */ b) => (b[2] - b[0]) * (b[3] - b[1]);
   const holders = shapes
     .filter(({ box }) => cx >= box[0] && cx <= box[2] && cy >= box[1] && cy <= box[3])
     .sort((a, b) => area(a.box) - area(b.box));
@@ -783,7 +790,7 @@ function locationOf(el, elements, boundText) {
     }
     if (nearest) where += `${where ? "," : ""} near ${name(nearest)}`;
   }
-  return where;
+  return where || ` near (${Math.round(minX)}, ${Math.round(minY)})`;
 }
 
 function arrowEndpoints(el, elementsMap, boundText) {
@@ -815,13 +822,18 @@ export function summarizeSceneEdits(baselineElements, editedElements, { maxLines
   for (const el of edited) {
     if (baselineMap.has(el.id)) continue;
     if (libraryRefOf(el)) {
-      const [minX, minY] = elementBounds(el);
-      const entry = addedItems.get(libraryGroupKey(el));
+      const [minX, minY, maxX, maxY] = elementBounds(el);
+      const key = libraryGroupKey(el);
+      const entry = addedItems.get(key);
       if (entry) {
-        entry.x = Math.min(entry.x, minX);
-        entry.y = Math.min(entry.y, minY);
+        entry.box = [
+          Math.min(entry.box[0], minX),
+          Math.min(entry.box[1], minY),
+          Math.max(entry.box[2], maxX),
+          Math.max(entry.box[3], maxY),
+        ];
       } else {
-        addedItems.set(libraryGroupKey(el), { ref: libraryRefOf(el), x: minX, y: minY });
+        addedItems.set(key, { ref: libraryRefOf(el), box: [minX, minY, maxX, maxY] });
       }
       continue;
     }
@@ -831,19 +843,20 @@ export function summarizeSceneEdits(baselineElements, editedElements, { maxLines
     }
     if (el.type === "freedraw") {
       stats.drawn += 1;
-      const where = locationOf(el, edited, editedText) || ` near (${Math.round(el.x)}, ${Math.round(el.y)})`;
+      const where = locationOf(elementBounds(el), (other) => other === el, edited, editedText);
       lines.push(clampLine(`Drew a freehand mark${where}`));
       continue;
     }
     stats.added += 1;
     const endpoints = el.type === "arrow" || el.type === "line" ? arrowEndpoints(el, editedMap, editedText) : "";
-    const where = endpoints || locationOf(el, edited, editedText);
+    const where = endpoints || locationOf(elementBounds(el), (other) => other === el, edited, editedText);
     lines.push(clampLine(`Added ${describeElement(el, editedText)}${where}`));
   }
 
-  for (const { ref, x, y } of addedItems.values()) {
+  for (const [key, { ref, box }] of addedItems) {
     stats.added += 1;
-    lines.push(clampLine(`Added library item ${ref} near (${Math.round(x)}, ${Math.round(y)})`));
+    const where = locationOf(box, (other) => libraryRefOf(other) && libraryGroupKey(other) === key, edited, editedText);
+    lines.push(clampLine(`Added library item ${ref}${where}`));
   }
 
   for (const el of baseline) {

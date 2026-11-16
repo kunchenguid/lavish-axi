@@ -207,5 +207,5 @@ test("library icon nodes keep their arrows attached and panel inserts stay named
   assert.equal(result.tdNode.nodes, 4);
   assert.equal(result.panelItems, 1);
   assert.equal(result.dropped, 2);
-  assert.match(result.summary, /^Added library item fixture\/Gear near \(/);
+  assert.match(result.summary, /^Added library item fixture\/Gear inside "Orders API" \(api\)$/);
 });

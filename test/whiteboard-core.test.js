@@ -418,6 +418,30 @@ test("summarizeSceneEdits places added items inside their nodes and subgraphs", 
   ]);
 });
 
+test("summarizeSceneEdits places a dropped library item, and falls back to coordinates with no labeled shape", () => {
+  const baseline = [rect("API", { x: 0, y: 0, width: 300, height: 200 }), boundLabel("API-label", "API", "Orders API")];
+  const ref = { lavishLibraryRef: "aws/AWS Lambda" };
+  const edited = [
+    ...structuredClone(baseline),
+    rect("n1", { x: 100, y: 80, width: 40, height: 40, groupIds: ["g1"], customData: ref }),
+    { id: "n2", type: "text", x: 110, y: 90, text: "λ", groupIds: ["g1"], customData: ref },
+  ];
+  assert.deepEqual(summarizeSceneEdits(baseline, edited).lines, [
+    'Added library item aws/AWS Lambda inside "Orders API" (API)',
+  ]);
+
+  const bare = [rect("A")];
+  const added = [
+    rect("A"),
+    rect("B", { x: 250, y: 60 }),
+    { id: "fd", type: "freedraw", x: 30, y: 45, points: [[0, 0]] },
+  ];
+  assert.deepEqual(summarizeSceneEdits(bare, added).lines, [
+    "Added rectangle (B) near (250, 60)",
+    "Drew a freehand mark near (30, 45)",
+  ]);
+});
+
 test("summarizeSceneEdits reports removals, treating isDeleted as removed", () => {
   const baseline = [rect("A"), rect("B")];
   const edited = [rect("A"), { ...rect("B"), isDeleted: true }];
