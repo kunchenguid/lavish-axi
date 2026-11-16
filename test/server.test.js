@@ -6592,6 +6592,15 @@ test("extractArtifactHead ignores a <title> mentioned inside an HTML comment", (
   assert.equal(extractArtifactHead("<head><!-- <title>Only in a comment</title> --></head>").title, "");
 });
 
+test("extractArtifactHead keeps the title when a '<!--' is not a comment", () => {
+  // Browsers read script and style contents as raw text, so a "<!--" there opens no comment.
+  assert.equal(
+    extractArtifactHead('<head><script>const marker = "<!--";</script><title>Board</title></head>').title,
+    "Board",
+  );
+  assert.equal(extractArtifactHead("<head><style>/* <!-- */</style><title>Board</title></head>").title, "Board");
+});
+
 test("extractArtifactHead handles shortcut icon and absolute hrefs", () => {
   const artifact = `<head><link rel="shortcut icon" href="https://example.com/fav.ico"></head>`;
   const { faviconTag } = extractArtifactHead(artifact);
