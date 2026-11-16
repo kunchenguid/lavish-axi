@@ -19,6 +19,7 @@ const retiredDraftStorageKey = "lavish-axi:retired-drafts:" + key;
 /** @type {any[]} */
 const retiredDraftNodes = [];
 const internalQueueKeyField = "_lavishQueueKey";
+const internalWhiteboardNoteField = "_lavishWhiteboardNote";
 const promptIdentityField = "prompt_id";
 const PROMPT_IDENTITY_MAX = 128;
 const PROMPT_IDENTITY_RE = /^[A-Za-z0-9_-]+$/;
@@ -1766,6 +1767,7 @@ function stripInternalPromptFields(prompt) {
   if (!prompt || typeof prompt !== "object") return prompt;
   const clean = { ...prompt };
   delete clean[internalQueueKeyField];
+  delete clean[internalWhiteboardNoteField];
   return clean;
 }
 
@@ -3982,10 +3984,10 @@ async function queueWhiteboardFeedback(index, message, mode) {
     const files = await response.json();
     const queueKey = "whiteboard:" + index;
     // Re-queueing replaces the earlier unsent prompt, so carry its note forward
-    // instead of dropping it.
+    // instead of dropping it. The note is kept on its own field because it can
+    // contain any text, including the generated heading.
     const earlier = queued.find((item) => promptQueueKey(item) === queueKey && !isPromptSending(item));
-    const earlierText = String(earlier?.prompt || "");
-    const earlierNote = earlierText.slice(0, Math.max(earlierText.indexOf("Whiteboard edits to diagram "), 0)).trim();
+    const earlierNote = String(earlier?.[internalWhiteboardNoteField] || "").trim();
     const newNote = String(message.note || "")
       .slice(0, 4000)
       .trim();
@@ -4027,6 +4029,7 @@ async function queueWhiteboardFeedback(index, message, mode) {
           // Re-queueing the same diagram's whiteboard before sending replaces the
           // earlier unsent prompt instead of stacking duplicates.
           [internalQueueKeyField]: queueKey,
+          [internalWhiteboardNoteField]: note,
         },
         preparation,
       )
