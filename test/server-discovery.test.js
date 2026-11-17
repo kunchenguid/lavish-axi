@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
-import { createServer as createHttpServer } from "node:http";
+import { createServer as createHttpServer, request as httpRequest } from "node:http";
 import { createServer } from "node:net";
 import { networkInterfaces, tmpdir } from "node:os";
 import path from "node:path";
@@ -127,6 +127,46 @@ function closeRaw(server) {
 async function health(host, port, query = "") {
   const response = await fetch(`http://${host}:${port}/health${query}`, { signal: AbortSignal.timeout(3000) });
   return response.json();
+}
+
+async function forwardingProxy({ host, port, targetPort, stripProcessId = false, onShutdown = () => {} }) {
+  const proxy = createHttpServer((req, res) => {
+    if (req.method === "POST" && req.url === "/shutdown") onShutdown();
+    const upstream = httpRequest(
+      {
+        hostname: "127.0.0.1",
+        port: targetPort,
+        method: req.method,
+        path: req.url,
+        headers: { ...req.headers, host: `127.0.0.1:${targetPort}` },
+      },
+      (reply) => {
+        if (stripProcessId && req.url?.startsWith("/health")) {
+          let body = "";
+          reply.on("data", (chunk) => (body += chunk));
+          reply.on("end", () => {
+            const healthBody = JSON.parse(body);
+            delete healthBody.process_id;
+            res.writeHead(reply.statusCode, { "content-type": "application/json" });
+            res.end(JSON.stringify(healthBody));
+          });
+        } else {
+          res.writeHead(reply.statusCode, reply.headers);
+          reply.pipe(res);
+        }
+      },
+    );
+    upstream.on("error", () => {
+      if (!res.headersSent) res.writeHead(502);
+      res.end();
+    });
+    req.pipe(upstream);
+  });
+  await new Promise((resolve, reject) => {
+    proxy.once("error", reject);
+    proxy.listen({ host, port }, () => resolve(undefined));
+  });
+  return proxy;
 }
 
 async function reachable(host, port) {
@@ -565,6 +605,102 @@ test(
   },
 );
 
+test("a daemon reached through a forwarding proxy is not retired", { timeout: 20_000 }, async (t) => {
+  const otherHost = otherLocalIpv4();
+  if (!otherHost) {
+    t.skip("host has no non-loopback IPv4 address");
+    return;
+  }
+  await withTempDir(async (dir) => {
+    const artifact = await writeArtifact(dir);
+    const port = await freePort(otherHost);
+    const kept = await serve({
+      port,
+      stateFile: path.join(dir, "state.json"),
+      version: VERSION,
+      env: {},
+      detectTailscale: null,
+      hosts: ["127.0.0.1"],
+      log: () => {},
+      idleTimeoutMs: null,
+    });
+    let shutdowns = 0;
+    const proxy = await forwardingProxy({
+      host: otherHost,
+      port,
+      targetPort: port,
+      onShutdown: () => shutdowns++,
+    });
+    try {
+      const direct = await health("127.0.0.1", port);
+      const forwarded = await health(otherHost, port);
+      assert.equal(typeof direct.process_id, "string");
+      assert.ok(direct.process_id.length > 0);
+      assert.equal(forwarded.process_id, direct.process_id);
+      await withEnv(cliEnv(dir, port, undefined), () => runCli(["open", artifact, "--no-open"]));
+      assert.equal(shutdowns, 0, "the CLI sent /shutdown to its own proxy alias");
+      assert.equal(await isResolved(kept.done), false, "the daemon was retired through its own alias");
+      assert.deepEqual(await stateSessions(dir), [artifact]);
+    } finally {
+      await closeRaw(proxy);
+      await kept.close();
+      await shutdownAt("127.0.0.1", port);
+    }
+  });
+});
+
+test("a second daemon without process_id is still retired", { timeout: 20_000 }, async (t) => {
+  const otherHost = otherLocalIpv4();
+  if (!otherHost) {
+    t.skip("host has no non-loopback IPv4 address");
+    return;
+  }
+  await withTempDir(async (dir) => {
+    const artifact = await writeArtifact(dir);
+    const options = {
+      port: 0,
+      stateFile: path.join(dir, "state.json"),
+      version: VERSION,
+      env: {},
+      detectTailscale: null,
+      hosts: ["127.0.0.1"],
+      log: () => {},
+      idleTimeoutMs: null,
+    };
+    const kept = await serve(options);
+    const duplicate = await serve(options);
+    const proxy = await forwardingProxy({
+      host: "127.0.0.1",
+      port: 0,
+      targetPort: kept.port,
+      stripProcessId: true,
+    });
+    const port = /** @type {import("node:net").AddressInfo} */ (proxy.address()).port;
+    const duplicateProxy = await forwardingProxy({
+      host: otherHost,
+      port,
+      targetPort: duplicate.port,
+      stripProcessId: true,
+    });
+    try {
+      const keptHealth = await health("127.0.0.1", port);
+      const duplicateHealth = await health(otherHost, port);
+      assert.equal(keptHealth.process_id, undefined);
+      assert.equal(duplicateHealth.process_id, undefined);
+      assert.equal(keptHealth.state_id, duplicateHealth.state_id);
+      await withEnv(cliEnv(dir, port, undefined), () => runCli(["open", artifact, "--no-open"]));
+      assert.ok(await waitFor(() => isResolved(duplicate.done)), "the duplicate daemon was not retired");
+      assert.equal(await isResolved(kept.done), false, "the chosen daemon was retired");
+      assert.deepEqual(await stateSessions(dir), [artifact]);
+    } finally {
+      await closeRaw(duplicateProxy);
+      await closeRaw(proxy);
+      await duplicate.close();
+      await kept.close();
+    }
+  });
+});
+
 test(
   "a same-port duplicate of this installation is retired, and another installation's server is left alone",
   { timeout: 20_000 },
@@ -621,6 +757,10 @@ test(
         idleTimeoutMs: null,
       });
       try {
+        const keptHealth = await health("127.0.0.1", port);
+        const duplicateHealth = await health(otherHost, port);
+        assert.equal(keptHealth.state_id, duplicateHealth.state_id);
+        assert.notEqual(keptHealth.process_id, duplicateHealth.process_id);
         const { key } = await openSession(otherHost, port, artifact);
         await withEnv(cliEnv(dir, port, undefined), () => runCli(["open", artifact, "--no-open"]));
         assert.ok(await waitFor(() => isResolved(duplicate.done)), "the duplicate daemon was not retired");
