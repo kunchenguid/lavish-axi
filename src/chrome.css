@@ -1110,6 +1110,7 @@ body.lavish {
   overflow: hidden;
 }
 .panel {
+  position: relative;
   width: var(--panel-w);
   border-left: var(--hairline-subtle);
   background: var(--bg-panel);
@@ -1117,6 +1118,43 @@ body.lavish {
   flex-direction: column;
   min-width: 0;
   min-height: 0;
+}
+/* The separator on the panel's left edge resizes the column (chrome-client.js owns the width). It
+   straddles the border so it is easy to grab without covering the conversation. */
+.panel-resizer {
+  position: absolute;
+  z-index: 5;
+  top: 0;
+  bottom: 0;
+  left: -4px;
+  width: 8px;
+  cursor: col-resize;
+  touch-action: none;
+}
+.panel-resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 2px;
+  background: transparent;
+  transition: background var(--dur-fast) var(--ease);
+}
+.panel-resizer:hover::after,
+.panel-resizer:focus-visible::after,
+body.is-resizing-panel .panel-resizer::after {
+  background: var(--accent);
+}
+.panel-resizer:focus-visible {
+  outline: none;
+}
+body.is-resizing-panel {
+  cursor: col-resize;
+  user-select: none;
+}
+body.is-resizing-panel iframe {
+  pointer-events: none;
 }
 /* A collapsed panel gives its whole column back to the artifact. Scoped to the exact complement of
    the phone breakpoint so the stored desktop preference can never hide the phone dock. */
@@ -1808,6 +1846,10 @@ body.layout-gate-active iframe#artifact {
   }
   body.sheet-open .panel {
     transform: none;
+  }
+  /* The sheet has a fixed full width; there is no column to resize. */
+  .panel-resizer {
+    display: none;
   }
   .panel.is-dragging {
     transition: none;

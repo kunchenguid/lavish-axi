@@ -96,6 +96,9 @@ async function createChromeHarness({
   // chrome's sheet breakpoint, with `setMobile` flipping it the way a resize would. Left off, the
   // window has no matchMedia at all, which is the desktop the other tests run against.
   mobile = false,
+  // Opt-in window width, for the conversation panel's resize bounds. Left off, the window reports
+  // no width, as the other tests' desktop does.
+  innerWidth = 0,
 } = {}) {
   const source = await readFile(sourceUrl, "utf8");
   // Seed sessionStorage before the client boots, to model a tab whose queue was
@@ -201,7 +204,23 @@ async function createChromeHarness({
           return [...classes].join(" ");
         },
       },
-      style: {},
+      // CSS custom properties land beside ordinary style fields. The methods are non-enumerable so
+      // a test comparing a style's plain fields never sees them.
+      style: Object.defineProperties(
+        {},
+        {
+          setProperty: {
+            value(name, value) {
+              this[name] = String(value);
+            },
+          },
+          removeProperty: {
+            value(name) {
+              delete this[name];
+            },
+          },
+        },
+      ),
       setAttribute(name, value) {
         this[name] = String(value);
       },
@@ -519,6 +538,7 @@ async function createChromeHarness({
       },
     },
   };
+  if (innerWidth > 0) Object.assign(context.window, { innerWidth });
   const mediaQueries = [];
   if (mobile) {
     context.window.matchMedia = (query) => {
@@ -9442,4 +9462,80 @@ test("a window that is not the artifact frame cannot set the tab", async () => {
     });
   }
   assert.equal(chrome.tab().title, "Plan \u00b7 Lavish");
+});
+
+// ---- Desktop conversation panel width ----
+
+function resizerKey(chrome, key) {
+  const event = {
+    key,
+    defaultPrevented: false,
+    preventDefault() {
+      this.defaultPrevented = true;
+    },
+  };
+  chrome.element("panelResizer").dispatch("keydown", event);
+  return event;
+}
+
+test("the conversation panel widens and narrows from its separator and remembers the width", async () => {
+  const localStore = new Map();
+  const chrome = await createChromeHarness({ localStore, innerWidth: 1600 });
+  const resizer = chrome.element("panelResizer");
+  assert.equal(chrome.element("body").style["--panel-w"], undefined, "no stored width keeps the stylesheet default");
+  assert.equal(resizer["aria-valuenow"], "360");
+
+  assert.equal(resizerKey(chrome, "ArrowLeft").defaultPrevented, true);
+  assert.equal(chrome.element("body").style["--panel-w"], "384px");
+  assert.equal(localStore.get("lavish-axi:panel-width"), "384");
+
+  resizerKey(chrome, "ArrowRight");
+  resizerKey(chrome, "ArrowRight");
+  assert.equal(chrome.element("body").style["--panel-w"], "336px");
+
+  const reloaded = await createChromeHarness({ localStore, innerWidth: 1600 });
+  assert.equal(reloaded.element("body").style["--panel-w"], "336px", "a reload restores the stored width");
+
+  resizerKey(reloaded, "Home");
+  assert.equal(reloaded.element("body").style["--panel-w"], undefined);
+  assert.equal(localStore.has("lavish-axi:panel-width"), false);
+});
+
+test("dragging the separator resizes the panel, clamped so the artifact keeps its room", async () => {
+  const localStore = new Map();
+  const chrome = await createChromeHarness({ localStore, innerWidth: 1000 });
+  const resizer = chrome.element("panelResizer");
+
+  resizer.dispatch("pointerdown", { pointerId: 1, clientX: 640, button: 0, preventDefault() {} });
+  assert.equal(chrome.element("body").classList.contains("is-resizing-panel"), true);
+  resizer.dispatch("pointermove", { pointerId: 1, clientX: 540 });
+  assert.equal(chrome.element("body").style["--panel-w"], "460px");
+  // Far past the window: the artifact keeps at least 360px of a 1000px window.
+  resizer.dispatch("pointermove", { pointerId: 1, clientX: -2000 });
+  assert.equal(chrome.element("body").style["--panel-w"], "640px");
+  resizer.dispatch("pointerup", { pointerId: 1, clientX: -2000 });
+
+  assert.equal(chrome.element("body").classList.contains("is-resizing-panel"), false);
+  assert.equal(localStore.get("lavish-axi:panel-width"), "640");
+
+  resizer.dispatch("pointerdown", { pointerId: 2, clientX: 400, button: 0, preventDefault() {} });
+  resizer.dispatch("pointermove", { pointerId: 2, clientX: 5000 });
+  resizer.dispatch("pointerup", { pointerId: 2, clientX: 5000 });
+  assert.equal(localStore.get("lavish-axi:panel-width"), "280", "never narrower than the minimum");
+
+  resizer.dispatch("dblclick", {});
+  assert.equal(localStore.has("lavish-axi:panel-width"), false, "a double-click resets to the default");
+});
+
+test("the panel separator ignores drags at phone width", async () => {
+  const localStore = new Map();
+  const chrome = await createChromeHarness({ localStore, mobile: true, innerWidth: 400 });
+  const resizer = chrome.element("panelResizer");
+
+  resizer.dispatch("pointerdown", { pointerId: 1, clientX: 200, button: 0, preventDefault() {} });
+  resizer.dispatch("pointermove", { pointerId: 1, clientX: 100 });
+  resizer.dispatch("pointerup", { pointerId: 1, clientX: 100 });
+
+  assert.equal(chrome.element("body").classList.contains("is-resizing-panel"), false);
+  assert.equal(localStore.has("lavish-axi:panel-width"), false);
 });

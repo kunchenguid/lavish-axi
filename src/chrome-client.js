@@ -181,6 +181,7 @@ const warningsSelected = /** @type {HTMLSpanElement} */ (document.getElementById
 const warningsList = /** @type {HTMLDivElement} */ (document.getElementById("warningsList"));
 const warningsQueueButton = /** @type {HTMLButtonElement} */ (document.getElementById("warningsQueueButton"));
 const revisionsWrap = /** @type {HTMLDivElement} */ (document.getElementById("revisionsWrap"));
+const panelResizer = /** @type {HTMLDivElement} */ (document.getElementById("panelResizer"));
 const revisionsButton = /** @type {HTMLButtonElement} */ (document.getElementById("revisionsButton"));
 const revisionsCount = /** @type {HTMLSpanElement} */ (document.getElementById("revisionsCount"));
 const revisionsDrawer = /** @type {HTMLDivElement} */ (document.getElementById("revisionsDrawer"));
@@ -1552,6 +1553,118 @@ function renderSidebarToggle() {
 }
 
 sidebarToggle.addEventListener("click", () => setPanelCollapsed(!panelCollapsed));
+
+// ---- Desktop conversation panel width ----
+// The side column's width is a per-viewer preference like the collapse state, so it lives in
+// localStorage under one key for every session. The separator on the panel's left edge resizes it
+// by pointer drag or arrow keys; a double-click (or Home) resets it. The width only drives
+// `--panel-w`, which chrome.css applies outside the phone breakpoint, so the phone sheet never sees
+// it. The clamp keeps both the conversation and the artifact usable whatever the window size.
+const panelWidthStorageKey = "lavish-axi:panel-width";
+const PANEL_WIDTH_DEFAULT = 360;
+const PANEL_WIDTH_MIN = 280;
+const PANEL_WIDTH_MAX = 960;
+const PANEL_WIDTH_ARTIFACT_MIN = 360;
+const PANEL_WIDTH_STEP = 24;
+let panelWidth = readPanelWidth();
+
+function readPanelWidth() {
+  try {
+    const stored = Number(localStorage.getItem(panelWidthStorageKey));
+    return Number.isFinite(stored) && stored > 0 ? stored : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function panelWidthBounds() {
+  const viewport = Number(window.innerWidth) || 0;
+  const roomy = viewport > 0 ? viewport - PANEL_WIDTH_ARTIFACT_MIN : PANEL_WIDTH_MAX;
+  const max = Math.max(PANEL_WIDTH_MIN, Math.min(PANEL_WIDTH_MAX, roomy));
+  return { min: PANEL_WIDTH_MIN, max };
+}
+
+function clampPanelWidth(width) {
+  const { min, max } = panelWidthBounds();
+  return Math.round(Math.min(max, Math.max(min, Number(width) || PANEL_WIDTH_DEFAULT)));
+}
+
+function applyPanelWidth() {
+  const style = document.body && document.body.style;
+  const effective = panelWidth > 0 ? clampPanelWidth(panelWidth) : PANEL_WIDTH_DEFAULT;
+  if (style && typeof style.setProperty === "function") {
+    if (panelWidth > 0) style.setProperty("--panel-w", effective + "px");
+    else if (typeof style.removeProperty === "function") style.removeProperty("--panel-w");
+  }
+  if (!panelResizer) return;
+  const { min, max } = panelWidthBounds();
+  panelResizer.setAttribute("aria-valuemin", String(min));
+  panelResizer.setAttribute("aria-valuemax", String(max));
+  panelResizer.setAttribute("aria-valuenow", String(effective));
+}
+
+function setPanelWidth(width, persist = true) {
+  panelWidth = width > 0 ? clampPanelWidth(width) : 0;
+  if (persist) {
+    try {
+      if (panelWidth > 0) localStorage.setItem(panelWidthStorageKey, String(panelWidth));
+      else localStorage.removeItem(panelWidthStorageKey);
+    } catch {
+      // Storage refused only means the width does not survive a reload.
+    }
+  }
+  applyPanelWidth();
+}
+
+function currentPanelWidth() {
+  return panelWidth > 0 ? clampPanelWidth(panelWidth) : PANEL_WIDTH_DEFAULT;
+}
+
+if (panelResizer) {
+  let drag = null;
+  const endDrag = (event) => {
+    if (!drag || (event && event.pointerId !== drag.pointerId)) return;
+    drag = null;
+    document.body.classList.remove("is-resizing-panel");
+    setPanelWidth(panelWidth || PANEL_WIDTH_DEFAULT);
+  };
+  panelResizer.addEventListener("pointerdown", (event) => {
+    if (isMobileSheet() || event.button !== 0) return;
+    event.preventDefault();
+    drag = { pointerId: event.pointerId, startX: event.clientX, startWidth: currentPanelWidth() };
+    // The artifact iframe would swallow pointer moves that cross it; the class turns its
+    // pointer events off for the length of the drag.
+    document.body.classList.add("is-resizing-panel");
+    if (typeof panelResizer.setPointerCapture === "function") {
+      try {
+        panelResizer.setPointerCapture(event.pointerId);
+      } catch {
+        // Capture is a nicety; the body class already keeps the moves in this document.
+      }
+    }
+  });
+  panelResizer.addEventListener("pointermove", (event) => {
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    // The panel sits on the right, so dragging its left edge leftwards widens it.
+    panelWidth = clampPanelWidth(drag.startWidth + (drag.startX - event.clientX));
+    applyPanelWidth();
+  });
+  panelResizer.addEventListener("pointerup", endDrag);
+  panelResizer.addEventListener("pointercancel", endDrag);
+  panelResizer.addEventListener("lostpointercapture", endDrag);
+  panelResizer.addEventListener("dblclick", () => setPanelWidth(0));
+  panelResizer.addEventListener("keydown", (event) => {
+    let next;
+    if (event.key === "ArrowLeft") next = currentPanelWidth() + PANEL_WIDTH_STEP;
+    else if (event.key === "ArrowRight") next = currentPanelWidth() - PANEL_WIDTH_STEP;
+    else if (event.key === "Home") next = 0;
+    else return;
+    event.preventDefault();
+    setPanelWidth(next);
+  });
+}
+window.addEventListener("resize", () => applyPanelWidth());
+applyPanelWidth();
 
 function scrollElementIntoView(el) {
   el.scrollIntoView({ block: "nearest", inline: "nearest" });
