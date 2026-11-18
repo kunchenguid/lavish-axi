@@ -19,6 +19,7 @@ const retiredDraftStorageKey = "lavish-axi:retired-drafts:" + key;
 /** @type {any[]} */
 const retiredDraftNodes = [];
 const internalQueueKeyField = "_lavishQueueKey";
+const internalWhiteboardNoteField = "_lavishWhiteboardNote";
 const promptIdentityField = "prompt_id";
 const PROMPT_IDENTITY_MAX = 128;
 const PROMPT_IDENTITY_RE = /^[A-Za-z0-9_-]+$/;
@@ -1603,11 +1604,21 @@ function commitQueuedEdit() {
     queued.splice(index, 1);
     afterQueuedPromptRemoved();
   } else {
+    if (typeof prompt[internalWhiteboardNoteField] === "string") syncWhiteboardNote(prompt, text);
     // In place, not replaced: the send bookkeeping tracks notes by object identity.
     prompt.prompt = text;
     persistQueuedPrompts();
   }
   return true;
+}
+
+// A re-queue rebuilds the whiteboard prompt from its stored note, so a saved edit must update that
+// note too. The note is the text before the generated heading; with no heading left, all of it.
+function syncWhiteboardNote(prompt, text) {
+  const target = prompt.target || {};
+  const heading = whiteboardHeading(Number(target.diagramIndex) || 0, target.diagramId) + "\n";
+  const at = text.lastIndexOf(heading);
+  prompt[internalWhiteboardNoteField] = (at === -1 ? text : text.slice(0, at)).trim();
 }
 
 function saveQueuedEdit() {
@@ -1766,6 +1777,7 @@ function stripInternalPromptFields(prompt) {
   if (!prompt || typeof prompt !== "object") return prompt;
   const clean = { ...prompt };
   delete clean[internalQueueKeyField];
+  delete clean[internalWhiteboardNoteField];
   return clean;
 }
 
@@ -3957,6 +3969,10 @@ function whiteboardSummaryText(summaryLines) {
     .join("\n");
 }
 
+function whiteboardHeading(index, diagramId) {
+  return "Whiteboard edits to diagram " + (index + 1) + (diagramId ? " (" + diagramId + ")" : "") + ":";
+}
+
 async function queueWhiteboardFeedback(index, message, mode) {
   const preparation = beginFeedbackPreparation();
   if (!preparation) {
@@ -3980,14 +3996,25 @@ async function queueWhiteboardFeedback(index, message, mode) {
     });
     if (!response.ok) throw new Error("failed to write whiteboard feedback files");
     const files = await response.json();
-    const note = String(message.note || "").slice(0, 4000);
+    const queueKey = "whiteboard:" + index;
+    // Re-queueing replaces the earlier unsent prompt, so carry its note forward
+    // instead of dropping it. The note is kept on its own field because it can
+    // contain any text, including the generated heading.
+    const earlier = queued.find((item) => promptQueueKey(item) === queueKey && !isPromptSending(item));
+    const earlierNote = String(earlier?.[internalWhiteboardNoteField] || "").trim();
+    const newNote = String(message.note || "")
+      .slice(0, 4000)
+      .trim();
+    // A note is a repeat only when it matches one whole earlier note: "approve
+    // this" and "disapprove this" are two instructions though one contains the other.
+    const sep = "\n\n";
+    const repeated = (sep + earlierNote + sep).includes(sep + newNote + sep);
+    const note = !earlierNote ? newNote : !newNote || repeated ? earlierNote : earlierNote + sep + newNote;
     const summary = whiteboardSummaryText(message.summaryLines);
     const promptText =
       (note ? note + "\n\n" : "") +
-      "Whiteboard edits to diagram " +
-      (index + 1) +
-      (diagramId ? " (" + diagramId + ")" : "") +
-      ":\n" +
+      whiteboardHeading(index, diagramId) +
+      "\n" +
       (summary || "(no summary)") +
       "\n\nEdited scene JSON: " +
       String(files.scene_path || "") +
@@ -4012,7 +4039,8 @@ async function queueWhiteboardFeedback(index, message, mode) {
           },
           // Re-queueing the same diagram's whiteboard before sending replaces the
           // earlier unsent prompt instead of stacking duplicates.
-          [internalQueueKeyField]: "whiteboard:" + index,
+          [internalQueueKeyField]: queueKey,
+          [internalWhiteboardNoteField]: note,
         },
         preparation,
       )

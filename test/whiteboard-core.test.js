@@ -380,6 +380,126 @@ test("summarizeSceneEdits classifies freedraw strokes as drawn", () => {
   assert.match(lines[0], /Drew a freehand mark near \(34, 41\)/);
 });
 
+test("summarizeSceneEdits places added items inside their nodes and subgraphs", () => {
+  const subgraph = (id, x) => rect(id, { x, y: 0, width: 300, height: 200, groupIds: [`subgraph_group_${id}`] });
+  const baseline = [
+    subgraph("FE", 0),
+    boundLabel("FE-label", "FE", "Frontend"),
+    rect("SDK", { x: 20, y: 40, width: 100, height: 40, groupIds: ["subgraph_group_FE"] }),
+    boundLabel("SDK-label", "SDK", "Client SDK"),
+    subgraph("BE", 400),
+    boundLabel("BE-label", "BE", "Backend"),
+    rect("API", { x: 420, y: 40, width: 120, height: 60, groupIds: ["subgraph_group_BE"] }),
+    boundLabel("API-label", "API", "Orders API"),
+  ];
+  const note = (id, x, y, text) => ({ id, type: "text", text, x, y, width: 40, height: 20 });
+  const edited = [
+    ...structuredClone(baseline),
+    note("n1", 140, 140, "bigger fonts"),
+    note("n2", 440, 50, "add cache"),
+    note("n3", 800, 50, "far away"),
+    {
+      id: "fd1",
+      type: "freedraw",
+      x: 30,
+      y: 45,
+      points: [
+        [0, 0],
+        [20, 10],
+      ],
+    },
+  ];
+  const { lines } = summarizeSceneEdits(baseline, edited);
+  assert.deepEqual(lines, [
+    'Added text "bigger fonts" (n1) inside "Frontend" (FE), near "Client SDK" (SDK)',
+    'Added text "add cache" (n2) inside "Orders API" (API) in "Backend" (BE)',
+    'Added text "far away" (n3) near "Backend" (BE)',
+    'Drew a freehand mark inside "Client SDK" (SDK) in "Frontend" (FE)',
+  ]);
+});
+
+test("summarizeSceneEdits keeps nearby labels within the containing section", () => {
+  const section = (id, x) => rect(id, { x, y: 0, width: 300, height: 200, groupIds: [`subgraph_group_${id}`] });
+  const baseline = [
+    section("FE", 0),
+    boundLabel("FE-label", "FE", "Frontend"),
+    rect("SDK", { x: 20, y: 130, width: 80, height: 40, groupIds: ["subgraph_group_FE"] }),
+    boundLabel("SDK-label", "SDK", "Client SDK"),
+    section("BE", 300),
+    boundLabel("BE-label", "BE", "Backend"),
+    rect("API", { x: 310, y: 130, width: 80, height: 40, groupIds: ["subgraph_group_BE"] }),
+    boundLabel("API-label", "API", "Orders API"),
+  ];
+  const additions = [
+    {
+      added: {
+        id: "mark",
+        type: "freedraw",
+        x: 270,
+        y: 140,
+        points: [
+          [0, 0],
+          [10, 10],
+        ],
+      },
+      expected: 'Drew a freehand mark inside "Frontend" (FE), near "Client SDK" (SDK)',
+    },
+    {
+      added: { id: "item", type: "text", text: "revise", x: 270, y: 140, width: 10, height: 10 },
+      expected: 'Added text "revise" (item) inside "Frontend" (FE), near "Client SDK" (SDK)',
+    },
+    {
+      added: rect("library", { x: 270, y: 140, width: 10, height: 10, customData: { lavishLibraryRef: "sys/Server" } }),
+      expected: 'Added library item sys/Server inside "Frontend" (FE), near "Client SDK" (SDK)',
+    },
+  ];
+  for (const { added, expected } of additions) {
+    assert.deepEqual(summarizeSceneEdits(baseline, [...structuredClone(baseline), added]).lines, [expected]);
+  }
+
+  const noFrontendNode = baseline.filter((el) => el.id !== "SDK" && el.id !== "SDK-label");
+  assert.deepEqual(
+    summarizeSceneEdits(noFrontendNode, [
+      ...structuredClone(noFrontendNode),
+      {
+        id: "mark",
+        type: "freedraw",
+        x: 270,
+        y: 140,
+        points: [
+          [0, 0],
+          [10, 10],
+        ],
+      },
+    ]).lines,
+    ['Drew a freehand mark inside "Frontend" (FE)'],
+  );
+});
+
+test("summarizeSceneEdits places a dropped library item, and falls back to coordinates with no labeled shape", () => {
+  const baseline = [rect("API", { x: 0, y: 0, width: 300, height: 200 }), boundLabel("API-label", "API", "Orders API")];
+  const ref = { lavishLibraryRef: "aws/AWS Lambda" };
+  const edited = [
+    ...structuredClone(baseline),
+    rect("n1", { x: 100, y: 80, width: 40, height: 40, groupIds: ["g1"], customData: ref }),
+    { id: "n2", type: "text", x: 110, y: 90, text: "λ", groupIds: ["g1"], customData: ref },
+  ];
+  assert.deepEqual(summarizeSceneEdits(baseline, edited).lines, [
+    'Added library item aws/AWS Lambda inside "Orders API" (API)',
+  ]);
+
+  const bare = [rect("A")];
+  const added = [
+    rect("A"),
+    rect("B", { x: 250, y: 60 }),
+    { id: "fd", type: "freedraw", x: 30, y: 45, points: [[0, 0]] },
+  ];
+  assert.deepEqual(summarizeSceneEdits(bare, added).lines, [
+    "Added rectangle (B) near (250, 60)",
+    "Drew a freehand mark near (30, 45)",
+  ]);
+});
+
 test("summarizeSceneEdits reports removals, treating isDeleted as removed", () => {
   const baseline = [rect("A"), rect("B")];
   const edited = [rect("A"), { ...rect("B"), isDeleted: true }];
