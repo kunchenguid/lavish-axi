@@ -562,6 +562,17 @@ body.lavish {
   background: var(--accent);
   box-shadow: 0 0 0 2px var(--bg-bar);
 }
+.sidebar-toggle.is-alert::after {
+  content: "";
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-pill);
+  background: var(--danger);
+  box-shadow: 0 0 0 2px var(--bg-bar);
+}
 .menu {
   position: absolute;
   background: var(--bg-bar);
@@ -1864,6 +1875,29 @@ body.layout-gate-active iframe#artifact {
   .panel-summary.is-accent {
     color: var(--accent);
     font-weight: var(--w-semi);
+  }
+  /* Trouble the closed sheet would otherwise hide: a failed send, a stopped server. */
+  .panel-summary.is-alert {
+    color: var(--danger);
+    font-weight: var(--w-semi);
+  }
+  .panel-summary.is-warn {
+    color: var(--accent);
+    font-weight: var(--w-semi);
+  }
+  .panel-summary.is-alert::before,
+  .panel-summary.is-warn::before {
+    content: "";
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    margin-right: 6px;
+    border-radius: var(--radius-pill);
+    background: currentColor;
+    vertical-align: 1px;
+  }
+  body:not(.sheet-open) .panel-head.has-alert {
+    box-shadow: inset 0 2px 0 var(--danger);
   }
   .panel-summary.is-unread::before {
     content: "";

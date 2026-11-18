@@ -7312,6 +7312,203 @@ test("the dock summarizes what the user should know while the sheet is down", as
   assert.equal(sheetState(chrome).summary, "Agent is working…");
 });
 
+// Regression: on a phone the conversation is a closed sheet, and "Could not send" or "Lavish was
+// stopped" lived only inside it - the visible dock just read "1 queued", so the page looked fine.
+test("the closed dock shows a failed send and a stopped server, not just the queue count", async () => {
+  const chrome = await createChromeHarness({
+    mobile: true,
+    fetchImpl: async (url) => {
+      if (String(url).endsWith("/prompts")) throw new TypeError("Failed to fetch");
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Call this Payment method", selector: "h2", tag: "element", text: "Payment" },
+  });
+  assert.equal(sheetState(chrome).summary, "1 queued");
+
+  chrome.element("send").click();
+  chrome.sendSnapshot("uid=1 body");
+  for (let i = 0; i < 4; i += 1) await flushPromises();
+  let state = sheetState(chrome);
+  assert.equal(state.open, false, "the sheet stays closed");
+  assert.equal(state.summary, "Could not send · 1 queued");
+  assert.match(state.summaryClass, /is-alert/);
+  assert.doesNotMatch(state.summaryClass, /is-accent/);
+  assert.match(String(chrome.element("panelHead").classList), /has-alert/);
+  assert.match(String(chrome.element("panelHead").classList), /is-fresh/, "a new problem pulses the dock");
+  chrome.element("panelHead").classList.remove("is-fresh");
+  chrome.eventSource().listeners.get("agent-presence")({ data: JSON.stringify({ state: "listening" }) });
+  assert.equal(sheetState(chrome).summary, "Could not send · 1 queued");
+  assert.doesNotMatch(String(chrome.element("panelHead").classList), /is-fresh/, "the same problem pulses once");
+
+  // The server going away outranks the failed send: it is why the send failed.
+  chrome.eventSource().listeners.get("chrome-outdated")({ data: JSON.stringify({ reason: "stop" }) });
+  state = sheetState(chrome);
+  assert.equal(state.summary, "Lavish stopped · 1 queued");
+  assert.match(state.summaryClass, /is-alert/);
+
+  // Dismissing the banner inside the sheet brings back the send failure it was covering.
+  chrome.element("outdatedDismiss").onclick();
+  assert.equal(sheetState(chrome).summary, "Could not send · 1 queued");
+});
+
+// Regression: a stalled send that then went through cleared the stall flag before the hint, so the
+// dock briefly read "Could not send" and pulsed for a send that succeeded.
+test("a stalled send that succeeds never flashes a send failure on the closed dock", async () => {
+  let resolvePost = (_value) => {};
+  const chrome = await createChromeHarness({
+    mobile: true,
+    fetchImpl: async (url) => {
+      if (String(url).endsWith("/prompts")) return new Promise((resolve) => (resolvePost = resolve));
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Call this Payment method", selector: "h2", tag: "element", text: "Payment" },
+  });
+  chrome.element("send").click();
+  chrome.sendSnapshot("uid=1 body");
+  await flushPromises();
+  chrome.runTimers(10_000);
+  let state = sheetState(chrome);
+  assert.equal(state.summary, "Still sending… · 1 queued");
+  assert.match(state.summaryClass, /is-warn/);
+  const summaries = [];
+  const summary = chrome.element("panelSummary");
+  let current = summary.textContent;
+  Object.defineProperty(summary, "textContent", {
+    configurable: true,
+    get: () => current,
+    set: (value) => {
+      current = value;
+      summaries.push(value);
+    },
+  });
+
+  chrome.element("panelHead").classList.remove("is-fresh");
+  resolvePost({ ok: true, json: async () => ({}) });
+  for (let i = 0; i < 4; i += 1) await flushPromises();
+  state = sheetState(chrome);
+  assert.equal(chrome.queued().length, 0);
+  assert.doesNotMatch(state.summaryClass, /is-alert|is-warn/);
+  assert.ok(summaries.length > 0, "the dock re-rendered after the send");
+  assert.equal(
+    summaries.some((text) => /Could not send/.test(text)),
+    false,
+    "the dock never claims the delivered send failed",
+  );
+  assert.doesNotMatch(String(chrome.element("panelHead").classList), /is-fresh|has-alert/);
+});
+
+test("the closed dock says why the server was replaced", async () => {
+  const chrome = await createChromeHarness({ mobile: true });
+  sendChromeOutdated(chrome, "upgrade");
+  let state = sheetState(chrome);
+  assert.equal(state.summary, "Lavish updated · reload");
+  assert.match(state.summaryClass, /is-warn/);
+
+  sendChromeOutdated(chrome, "local-build");
+  state = sheetState(chrome);
+  assert.equal(state.summary, "Lavish restarted · reload", "a local build is a restart, not an update");
+  assert.match(state.summaryClass, /is-warn/);
+});
+
+test("the closed dock says when the live connection to Lavish is lost", async () => {
+  const chrome = await createChromeHarness({ mobile: true });
+  for (let failure = 0; failure < 5; failure += 1) {
+    const socket = chrome.webSocketAt(chrome.webSocketCount() - 1);
+    socket.protocolListeners.get("close")({});
+    chrome.runTimers();
+  }
+  let state = sheetState(chrome);
+  assert.equal(state.summary, "Lavish unreachable");
+  assert.match(state.summaryClass, /is-alert/);
+
+  // Dismissing the banner does not make the dock claim all is well while it is still down.
+  chrome.element("outdatedDismiss").onclick();
+  assert.equal(sheetState(chrome).summary, "Lavish unreachable");
+
+  const socket = chrome.webSocketAt(chrome.webSocketCount() - 1);
+  socket.protocolListeners.get("open")({});
+  state = sheetState(chrome);
+  assert.equal(state.summary, "Agent not listening");
+  assert.doesNotMatch(state.summaryClass, /is-alert/);
+  assert.doesNotMatch(String(chrome.element("panelHead").classList), /has-alert/);
+});
+
+test("the closed dock flags sent notes no agent has picked up", async () => {
+  const chrome = await createChromeHarness({
+    mobile: true,
+    sessionData: {
+      ...defaultSessionData,
+      initialChat: [
+        { role: "user", kind: "message", text: "Ship it", at: "2026-11-09T10:00:00.000Z", prompt_id: "n1" },
+      ],
+      initialChatRevision: 1,
+    },
+  });
+  let state = sheetState(chrome);
+  assert.equal(state.summary, "No agent listening");
+  assert.match(state.summaryClass, /is-warn/);
+  assert.doesNotMatch(String(chrome.element("panelHead").classList), /is-fresh/, "a warning does not pulse");
+
+  chrome.eventSource().listeners.get("agent-presence")({ data: JSON.stringify({ state: "listening" }) });
+  assert.equal(sheetState(chrome).summary, "Agent listening");
+
+  chrome.eventSource().listeners.get("agent-presence")({ data: JSON.stringify({ state: "waiting" }) });
+
+  // A queued note does not hide the stranded one; it is counted after it.
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Call this Payment method", selector: "h2", tag: "element", text: "Payment" },
+  });
+  state = sheetState(chrome);
+  assert.equal(state.summary, "No agent listening · 1 queued");
+  assert.match(state.summaryClass, /is-warn/);
+  assert.doesNotMatch(state.summaryClass, /is-accent/);
+  chrome.eventSource().listeners.get("chat-sync")({
+    data: JSON.stringify({
+      chat: [
+        {
+          role: "user",
+          kind: "message",
+          text: "Ship it",
+          at: "2026-11-09T10:00:00.000Z",
+          prompt_id: "n1",
+          delivered_at: "2026-11-09T10:01:00.000Z",
+        },
+      ],
+      chat_revision: 2,
+    }),
+  });
+  state = sheetState(chrome);
+  assert.equal(state.summary, "1 queued", "a note an agent has seen is not flagged");
+  assert.doesNotMatch(state.summaryClass, /is-warn/);
+});
+
+test("a collapsed desktop panel marks its toggle when a send fails", async () => {
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url) => {
+      if (String(url).endsWith("/prompts")) throw new TypeError("Failed to fetch");
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+  chrome.element("sidebarToggle").dispatch("click", {});
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Tighten", selector: "h2", tag: "element", text: "Payment" },
+  });
+  chrome.element("send").click();
+  chrome.sendSnapshot("uid=1 body");
+  for (let i = 0; i < 4; i += 1) await flushPromises();
+  const toggle = chrome.element("sidebarToggle");
+  assert.match(String(toggle.classList), /is-alert/);
+  assert.match(toggle["aria-label"], /Could not send/);
+});
+
 test("the dock reports an ended session", async () => {
   const chrome = await createChromeHarness({
     mobile: true,
