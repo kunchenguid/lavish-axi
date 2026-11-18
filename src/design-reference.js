@@ -138,6 +138,21 @@ export const LAYOUT_SAFETY_CSS_SNIPPET = `<style>
   }
 </style>`;
 
+// Neutral light/dark pair for the unconfigured default. The agent pastes this into
+// the saved file next to a static `data-theme="corporate"`, so no-JS and direct-open
+// renders stay light while a reader whose OS prefers dark gets `dim`. It reads only
+// the OS media query: no storage, no control, no network, and Lavish injects nothing.
+export const THEME_FOLLOW_SYSTEM_SNIPPET = `<script>
+  (function () {
+    var query = window.matchMedia("(prefers-color-scheme: dark)");
+    function apply() {
+      document.documentElement.dataset.theme = query.matches ? "dim" : "corporate";
+    }
+    apply();
+    query.addEventListener("change", apply);
+  })();
+</script>`;
+
 // The agent already knows what it changed answering the last round of feedback,
 // so it says so rather than making Lavish diff two renders. Both attributes are
 // ordinary artifact content: they survive export and opening the file directly.
@@ -216,6 +231,9 @@ export function createDesignOutput() {
       layout_safety_snippet: LAYOUT_SAFETY_CSS_SNIPPET,
       layout_safety_note:
         "Optional copy-paste CSS for artifacts with dense nested grid/flex layouts, badges, wide monospace or pixel fonts, or local media. Paste it into the artifact yourself when useful. Lavish never auto-injects it, so direct-open portability stays intact.",
+      theme_follow_system_snippet: THEME_FOLLOW_SYSTEM_SNIPPET,
+      theme_follow_system_note:
+        'Optional `<head>` script for the default theme: it switches `<html data-theme="corporate">` to `dim` when the reader\'s OS prefers dark and back on change. Paste it into the artifact yourself next to the static `data-theme="corporate"`. Lavish never auto-injects it, so direct-open portability stays intact. It adds no toggle and stores nothing.',
       other_design_systems:
         "If the user asks for a different design system (Bootstrap, custom CSS, plain HTML, etc.), use that instead - Lavish does not require DaisyUI.",
     },
@@ -244,8 +262,8 @@ export function createDesignOutput() {
     tab_meta:
       "Opt-in: a long-lived artifact can show live state on the background browser tab with `window.lavish?.setDocumentMeta?.({ title, icon })`; see the README.",
     theme_usage: [
-      'Default to `<html data-theme="luxury">` - it matches the Lavish look. Pick a different theme from the list below only when the user asked for one or the content clearly calls for it.',
-      'Set a nested section theme with `<section data-theme="night">`.',
+      'Default to `<html data-theme="corporate">` plus the `theme_follow_system_snippet` in `<head>`: corporate (light) and dim (dark) follow the reader\'s `prefers-color-scheme`, and both keep neutral body text. Pick a different theme from the list below only when the user asked for one or the content clearly calls for it; a fixed theme needs no snippet.',
+      'Set a nested section theme with `<section data-theme="dim">`.',
       "Prefer semantic colors such as `bg-base-100`, `bg-base-200`, `text-base-content`, `bg-primary`, `text-primary-content`, `alert-warning`, and `btn-primary` so themes remain readable.",
       "Avoid hardcoded Tailwind color names for text and surfaces unless the user asked for exact colors.",
       "Use Tailwind responsive prefixes such as `sm:`, `md:`, `lg:`, and `xl:` for layout changes.",
