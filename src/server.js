@@ -763,17 +763,18 @@ export async function serve({
     return defaultJsonParser(req, res, next);
   });
 
-  app.get("/", async (_req, res, next) => {
+  app.get("/", async (req, res, next) => {
     try {
-      res.type("html").send(createLandingHtml(serializeSessionDirectory(await store.listSessions())));
+      const sessions = isLoopbackPeer(req.socket?.remoteAddress) ? serializeSessionDirectory(await store.listSessions()) : [];
+      res.type("html").send(createLandingHtml(sessions));
     } catch (error) {
       next(error);
     }
   });
 
-  app.get("/api/sessions", async (_req, res, next) => {
+  app.get("/api/sessions", async (req, res, next) => {
     try {
-      res.json({ sessions: serializeSessionDirectory(await store.listSessions()) });
+      res.json({ sessions: isLoopbackPeer(req.socket?.remoteAddress) ? serializeSessionDirectory(await store.listSessions()) : [] });
     } catch (error) {
       next(error);
     }
@@ -2505,6 +2506,12 @@ function wantsHtml(req) {
 
 // What the directory and the switcher call a session. The file name alone is ambiguous across
 // projects (`plan.html` is everywhere), so the label leads with the parent directory.
+export function isLoopbackPeer(address) {
+  if (typeof address !== "string") return false;
+  const ip = address.replace(/^::ffff:/i, "");
+  return ip === "::1" || (isIP(ip) === 4 && ip.startsWith("127."));
+}
+
 export function sessionDisplayName(session) {
   const file = String(session.file || "");
   const base = path.basename(file);

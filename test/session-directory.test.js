@@ -7,7 +7,7 @@ import test from "node:test";
 process.env.LAVISH_AXI_HOST = "127.0.0.1";
 process.env.LAVISH_AXI_LINK_HOST = "127.0.0.1";
 
-import { createChromeHtml, serve } from "../src/server.js";
+import { createChromeHtml, isLoopbackPeer, serve } from "../src/server.js";
 
 async function withServer(fn) {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-directory-"));
@@ -80,4 +80,11 @@ test("the chrome navbar carries a session switcher with an escaped label", () =>
   assert.match(html, /id="sessionsMenu"/);
   assert.ok(html.includes("&lt;plan&gt;/a.html"));
   assert.doesNotMatch(html, /<plan>\/a\.html/);
+});
+
+test("isLoopbackPeer accepts only loopback TCP peers", () => {
+  for (const ok of ["127.0.0.1", "127.8.9.1", "::1", "::ffff:127.0.0.1"]) assert.equal(isLoopbackPeer(ok), true, ok);
+  for (const bad of ["100.64.0.5", "192.168.1.2", "::ffff:10.0.0.1", "2001:db8::1", "127.example.com", "", undefined, null]) {
+    assert.equal(isLoopbackPeer(bad), false, String(bad));
+  }
 });
