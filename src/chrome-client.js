@@ -886,7 +886,9 @@ function closeMenus() {
 
 // The switcher only links to other sessions' chrome pages; it holds no authority. Names and
 // paths come from the server as plain text and are rendered with textContent, never as HTML.
+let sessionsRequestId = 0;
 async function refreshSessionsMenu() {
+  const requestId = ++sessionsRequestId;
   const message = (text) => {
     sessionsList.replaceChildren();
     const note = document.createElement("div");
@@ -900,12 +902,17 @@ async function refreshSessionsMenu() {
     const response = await fetch("/api/sessions", { signal: controller.signal }).finally(() => clearTimeout(timer));
     if (!response.ok) throw new Error("status " + response.status);
     const body = await response.json();
+    if (requestId !== sessionsRequestId) return;
     const sessions = Array.isArray(body.sessions) ? body.sessions : [];
     sessionsList.replaceChildren();
     for (const entry of sessions) {
       const link = document.createElement("a");
       link.className = "menu-item sessions-item";
       link.setAttribute("role", "menuitem");
+      link.addEventListener("click", (event) => {
+        if (!chatInput.value.trim() && !editingDraft.trim()) return;
+        if (!window.confirm("You have unsent writing in this session. Switch anyway?")) event.preventDefault();
+      });
       link.href = "/session/" + encodeURIComponent(String(entry.key));
       if (entry.key === sessionData.key) link.setAttribute("aria-current", "page");
       const name = document.createElement("span");
@@ -919,7 +926,7 @@ async function refreshSessionsMenu() {
     }
     if (!sessions.length) message("No other open sessions.");
   } catch {
-    message("Could not load sessions.");
+    if (requestId === sessionsRequestId) message("Could not load sessions.");
   }
 }
 
@@ -4777,7 +4784,9 @@ document.addEventListener("keydown", (event) => {
     } else if (warningsDrawerOpen) {
       closeWarningsDrawer({ restoreFocus: true });
     } else if (!moreMenu.hidden || !sessionsMenu.hidden) {
+      const sessionsWasOpen = !sessionsMenu.hidden;
       closeMenus();
+      if (sessionsWasOpen) sessionsButton.focus();
     } else if (sheetOpen && isMobileSheet()) {
       setSheetOpen(false);
     } else {

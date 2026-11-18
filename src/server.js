@@ -765,7 +765,7 @@ export async function serve({
 
   app.get("/", async (req, res, next) => {
     try {
-      const sessions = isLoopbackPeer(req.socket?.remoteAddress) ? serializeSessionDirectory(await store.listSessions()) : [];
+      const sessions = isDirectoryRequest(req) ? serializeSessionDirectory(await store.listSessions()) : [];
       res.type("html").send(createLandingHtml(sessions));
     } catch (error) {
       next(error);
@@ -774,7 +774,7 @@ export async function serve({
 
   app.get("/api/sessions", async (req, res, next) => {
     try {
-      res.json({ sessions: isLoopbackPeer(req.socket?.remoteAddress) ? serializeSessionDirectory(await store.listSessions()) : [] });
+      res.json({ sessions: isDirectoryRequest(req) ? serializeSessionDirectory(await store.listSessions()) : [] });
     } catch (error) {
       next(error);
     }
@@ -2504,14 +2504,20 @@ function wantsHtml(req) {
   return accept.toLowerCase().includes("text/html");
 }
 
-// What the directory and the switcher call a session. The file name alone is ambiguous across
-// projects (`plan.html` is everywhere), so the label leads with the parent directory.
+const FORWARDING_HEADERS = ["forwarded", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "x-real-ip"];
+
+export function isDirectoryRequest(req) {
+  return isLoopbackPeer(req.socket?.remoteAddress) && !FORWARDING_HEADERS.some((name) => req.headers?.[name] !== undefined);
+}
+
 export function isLoopbackPeer(address) {
   if (typeof address !== "string") return false;
   const ip = address.replace(/^::ffff:/i, "");
   return ip === "::1" || (isIP(ip) === 4 && ip.startsWith("127."));
 }
 
+// What the directory and the switcher call a session. The file name alone is ambiguous across
+// projects (`plan.html` is everywhere), so the label leads with the parent directory.
 export function sessionDisplayName(session) {
   const file = String(session.file || "");
   const base = path.basename(file);

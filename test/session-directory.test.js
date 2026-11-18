@@ -7,7 +7,7 @@ import test from "node:test";
 process.env.LAVISH_AXI_HOST = "127.0.0.1";
 process.env.LAVISH_AXI_LINK_HOST = "127.0.0.1";
 
-import { createChromeHtml, isLoopbackPeer, serve } from "../src/server.js";
+import { createChromeHtml, isDirectoryRequest, isLoopbackPeer, serve } from "../src/server.js";
 
 async function withServer(fn) {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-directory-"));
@@ -87,4 +87,26 @@ test("isLoopbackPeer accepts only loopback TCP peers", () => {
   for (const bad of ["100.64.0.5", "192.168.1.2", "::ffff:10.0.0.1", "2001:db8::1", "127.example.com", "", undefined, null]) {
     assert.equal(isLoopbackPeer(bad), false, String(bad));
   }
+});
+
+test("a loopback request carrying a forwarding header gets no directory", async () => {
+  await withServer(async ({ base, open }) => {
+    const a = await open("a.html");
+    const plain = await fetch(`${base}/api/sessions`).then((r) => r.json());
+    assert.equal(plain.sessions.length, 1);
+    for (const header of ["x-forwarded-for", "x-real-ip", "x-forwarded-proto", "forwarded"]) {
+      const proxied = await fetch(`${base}/api/sessions`, { headers: { [header]: "203.0.113.9" } }).then((r) => r.json());
+      assert.deepEqual(proxied.sessions, [], header);
+      const html = await fetch(`${base}/`, { headers: { [header]: "203.0.113.9", accept: "text/html" } }).then((r) => r.text());
+      assert.doesNotMatch(html, new RegExp(a.body.key), header);
+      assert.match(html, /Lavish Editor is running/);
+    }
+  });
+});
+
+test("isDirectoryRequest needs a loopback peer and no forwarding header", () => {
+  const req = (remoteAddress, headers = {}) => ({ socket: { remoteAddress }, headers });
+  assert.equal(isDirectoryRequest(req("127.0.0.1")), true);
+  assert.equal(isDirectoryRequest(req("127.0.0.1", { "x-forwarded-host": "x" })), false);
+  assert.equal(isDirectoryRequest(req("100.64.0.5")), false);
 });
