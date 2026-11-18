@@ -2543,7 +2543,7 @@ export function serializeSessionDirectory(sessions) {
     .sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)));
 }
 
-function createLandingHtml(sessions = []) {
+export function createLandingHtml(sessions = []) {
   if (sessions.length) {
     const items = sessions
       .map(

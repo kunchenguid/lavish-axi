@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -7,7 +7,7 @@ import test from "node:test";
 process.env.LAVISH_AXI_HOST = "127.0.0.1";
 process.env.LAVISH_AXI_LINK_HOST = "127.0.0.1";
 
-import { createChromeHtml, isDirectoryRequest, isLoopbackPeer, serve } from "../src/server.js";
+import { createChromeHtml, createLandingHtml, isDirectoryRequest, isLoopbackPeer, serve } from "../src/server.js";
 
 async function withServer(fn) {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-directory-"));
@@ -55,16 +55,21 @@ test("GET /api/sessions lists open sessions, labelled by directory and file, and
   });
 });
 
-test("the root page lists open sessions, escapes labels, and links to each session", async () => {
-  await withServer(async ({ base, dir, open }) => {
-    const hostile = path.join(dir, "<img src=x onerror=alert(1)>");
-    await mkdir(hostile);
-    const a = await open("<img src=x onerror=alert(1)>/a.html");
+test("the root page lists open sessions and links to each session", async () => {
+  await withServer(async ({ base, open }) => {
+    const a = await open("a.html");
     const html = await fetch(`${base}/`, { headers: { accept: "text/html" } }).then((r) => r.text());
-    assert.doesNotMatch(html, /<img src=x/);
-    assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;\/a\.html/);
     assert.ok(html.includes(`href="/session/${a.body.key}"`));
   });
+});
+
+test("the landing page escapes markup in a session label and path", () => {
+  // A fake row, not a directory: Windows refuses `<` and `>` in path names.
+  const hostile = "<img src=x onerror=alert(1)>/a.html";
+  const html = createLandingHtml([{ key: "k1", name: hostile, file: `~/${hostile}` }]);
+  assert.doesNotMatch(html, /<img src=x/);
+  assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;\/a\.html/);
+  assert.ok(html.includes('href="/session/k1"'));
 });
 
 test("the root page keeps the running message when no session is open", async () => {

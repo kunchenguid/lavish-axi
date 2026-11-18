@@ -910,7 +910,7 @@ async function refreshSessionsMenu() {
       link.className = "menu-item sessions-item";
       link.setAttribute("role", "menuitem");
       link.addEventListener("click", (event) => {
-        if (!chatInput.value.trim() && !editingDraft.trim()) return;
+        if (!chatInput.value.trim() && !editingDraft.trim() && !chatAttachmentController.hasAny()) return;
         if (!window.confirm("You have unsent writing in this session. Switch anyway?")) event.preventDefault();
       });
       link.href = "/session/" + encodeURIComponent(String(entry.key));
@@ -2058,6 +2058,7 @@ function createChatAttachmentsController() {
       const item = items.find((candidate) => candidate.localId === localId);
       if (item?.file) startUpload(item);
     },
+    hasAny: () => items.length > 0,
     hasPending: () => items.some((item) => item.status === "uploading"),
     hasErrors: () => items.some((item) => item.status === "error"),
     noteSendBlocked() {

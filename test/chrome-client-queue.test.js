@@ -9496,6 +9496,31 @@ test("a session switcher link asks before dropping an unsent composer message", 
   }
 });
 
+test("a session switcher link asks before dropping an image-only draft", async () => {
+  const chrome = await createChromeHarness({
+    confirmAnswer: false,
+    sessionData: { ...defaultSessionData, attachmentMaxBytes: 1024, attachmentMaxCount: 4 },
+    fetchImpl: async (url) =>
+      String(url) === "/api/sessions"
+        ? { ok: true, json: async () => ({ sessions: [{ key: "other", name: "p/o.html", file: "~/p/o.html" }] }) }
+        : { ok: true, json: async () => ({ attachment: { id: "f".repeat(64) + ".png" } }) },
+  });
+  chrome.element("chatAttachInput").files = [pastedImage("picked.png")];
+  chrome.element("chatAttachInput").dispatch("change");
+  await flushPromises();
+  chrome.element("sessionsButton").click();
+  await flushPromises();
+  const event = {
+    defaultPrevented: false,
+    preventDefault() {
+      this.defaultPrevented = true;
+    },
+  };
+  sessionLinks(chrome)[0].dispatch("click", event);
+  assert.equal(chrome.confirmPrompts.length, 1);
+  assert.equal(event.defaultPrevented, true);
+});
+
 test("a session switcher link never prompts when nothing is unsent", async () => {
   const chrome = await createChromeHarness({
     confirmAnswer: false,
