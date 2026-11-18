@@ -851,7 +851,8 @@ export async function serve({
         return;
       }
       const url = shouldDisableLayoutGateOpen(req.body || {}) ? appendNoGateParam(sessionUrl) : sessionUrl;
-      const session = await store.upsertSession(file, sessionUrl);
+      const name = typeof req.body?.name === "string" ? normalizeSessionName(req.body.name) : undefined;
+      const session = await store.upsertSession(file, sessionUrl, { name });
       if (existing?.status === "ended") {
         clearFeedbackDelivery(key, activePolls, deliveredFeedback, events);
       }
@@ -2518,9 +2519,27 @@ export function isLoopbackPeer(address) {
   return ip === "::1" || (isIP(ip) === 4 && ip.startsWith("127."));
 }
 
-// What the directory and the switcher call a session. The file name alone is ambiguous across
-// projects (`plan.html` is everywhere), so the label leads with the parent directory.
+export const SESSION_NAME_MAX_LENGTH = 80;
+
+// The reviewer-facing label for a session. It is display text only: control characters are
+// dropped, whitespace is collapsed and the length is bounded so a name can never grow the
+// directory or the navbar without limit. Everything that renders it escapes it.
+export function normalizeSessionName(value) {
+  if (typeof value !== "string") return "";
+  const printable = Array.from(value, (char) => {
+    const code = char.codePointAt(0) || 0;
+    if (code === 9 || code === 10 || code === 13) return " ";
+    return code < 0x20 || code === 0x7f ? "" : char;
+  }).join("");
+  return printable.replace(/\s+/g, " ").trim().slice(0, SESSION_NAME_MAX_LENGTH).trim();
+}
+
+// What the directory and the switcher call a session: its stored name, else a default. The file
+// name alone is ambiguous across projects (`plan.html` is everywhere), so the default leads with
+// the parent directory.
 export function sessionDisplayName(session) {
+  const stored = normalizeSessionName(session.name);
+  if (stored) return stored;
   const file = String(session.file || "");
   const base = path.basename(file);
   const parent = path.basename(path.dirname(file));
@@ -3136,6 +3155,7 @@ export function createChromeHtml(
   const sessionJson = jsonScript({
     key: session.key,
     file: session.file,
+    name: sessionDisplayName(session),
     // A page loaded (or reloaded) after the session already ended has no future live `ended`
     // event to wait for - it must start read-only instead of looking live until the user tries
     // to send and gets refused (#171).
