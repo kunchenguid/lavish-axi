@@ -9474,14 +9474,22 @@ test("a session switcher link asks before dropping an unsent composer message", 
     const chrome = await createChromeHarness({
       confirmAnswer: answer,
       fetchImpl: sessionsFetch([
-        async () => ({ ok: true, json: async () => ({ sessions: [{ key: "other", name: "p/o.html", file: "~/p/o.html" }] }) }),
+        async () => ({
+          ok: true,
+          json: async () => ({ sessions: [{ key: "other", name: "p/o.html", file: "~/p/o.html" }] }),
+        }),
       ]),
     });
     chrome.element("sessionsButton").click();
     await flushPromises();
     const [link] = sessionLinks(chrome);
     chrome.element("chatInput").value = "half-written thought";
-    const event = { defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } };
+    const event = {
+      defaultPrevented: false,
+      preventDefault() {
+        this.defaultPrevented = true;
+      },
+    };
     link.dispatch("click", event);
     assert.equal(chrome.confirmPrompts.length, 1);
     assert.equal(event.defaultPrevented, expectPrevented);
@@ -9492,12 +9500,20 @@ test("a session switcher link never prompts when nothing is unsent", async () =>
   const chrome = await createChromeHarness({
     confirmAnswer: false,
     fetchImpl: sessionsFetch([
-      async () => ({ ok: true, json: async () => ({ sessions: [{ key: "other", name: "p/o.html", file: "~/p/o.html" }] }) }),
+      async () => ({
+        ok: true,
+        json: async () => ({ sessions: [{ key: "other", name: "p/o.html", file: "~/p/o.html" }] }),
+      }),
     ]),
   });
   chrome.element("sessionsButton").click();
   await flushPromises();
-  const event = { defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } };
+  const event = {
+    defaultPrevented: false,
+    preventDefault() {
+      this.defaultPrevented = true;
+    },
+  };
   sessionLinks(chrome)[0].dispatch("click", event);
   assert.equal(chrome.confirmPrompts.length, 0);
   assert.equal(event.defaultPrevented, false);
@@ -9516,12 +9532,14 @@ test("Escape closes the sessions menu and returns focus to its button", async ()
 });
 
 test("only the latest sessions request updates the switcher", async () => {
-  let releaseOld;
+  /** @type {() => void} */
+  let releaseOld = () => {};
   const chrome = await createChromeHarness({
     fetchImpl: sessionsFetch([
       () =>
         new Promise((resolve) => {
-          releaseOld = () => resolve({ ok: true, json: async () => ({ sessions: [{ key: "old", name: "old", file: "old" }] }) });
+          releaseOld = () =>
+            resolve({ ok: true, json: async () => ({ sessions: [{ key: "old", name: "old", file: "old" }] }) });
         }),
       async () => ({ ok: true, json: async () => ({ sessions: [{ key: "new", name: "new", file: "new" }] }) }),
     ]),

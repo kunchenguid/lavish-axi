@@ -2507,7 +2507,9 @@ function wantsHtml(req) {
 const FORWARDING_HEADERS = ["forwarded", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "x-real-ip"];
 
 export function isDirectoryRequest(req) {
-  return isLoopbackPeer(req.socket?.remoteAddress) && !FORWARDING_HEADERS.some((name) => req.headers?.[name] !== undefined);
+  return (
+    isLoopbackPeer(req.socket?.remoteAddress) && !FORWARDING_HEADERS.some((name) => req.headers?.[name] !== undefined)
+  );
 }
 
 export function isLoopbackPeer(address) {
