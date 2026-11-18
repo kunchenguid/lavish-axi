@@ -166,6 +166,22 @@ body.lavish {
   position: relative;
   top: 1px;
 }
+.brand-stamp {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+  position: relative;
+  top: 1px;
+}
+/* The role label is uppercase and tracked; its time stays plain so "pm" and dates read normally. */
+.chat-stamp {
+  margin-left: 0.35em;
+  font-weight: var(--w-regular);
+  letter-spacing: normal;
+  text-transform: none;
+  font-variant-numeric: tabular-nums;
+}
 .spacer {
   flex: 1;
 }
@@ -1735,7 +1751,8 @@ body.layout-gate-active iframe#artifact {
     gap: 10px;
     --bar-pad: var(--space-6);
   }
-  .brand-support {
+  .brand-support,
+  .brand-stamp {
     display: none;
   }
   .warnings-drawer {
