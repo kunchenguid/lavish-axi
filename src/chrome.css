@@ -2056,3 +2056,80 @@ body.layout-gate-active iframe#artifact {
 .whiteboard-error[hidden] {
   display: none;
 }
+
+/* Session switcher: the current session's name opens a list of the other open sessions. */
+.sessions-wrap {
+  position: relative;
+  margin-left: 14px;
+  min-width: 0;
+}
+.sessions-button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: min(320px, 38vw);
+  height: 30px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.sessions-button:hover,
+.sessions-button[aria-expanded="true"] {
+  background: var(--bg-hover, rgba(0, 0, 0, 0.06));
+}
+.sessions-current {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sessions-caret {
+  color: var(--fg-muted);
+  font-size: 11px;
+}
+.sessions-menu {
+  left: 0;
+  top: 42px;
+  width: min(360px, calc(100vw - 24px));
+}
+.sessions-menu .menu-label {
+  padding: 7px 10px 0;
+}
+.sessions-list {
+  max-height: min(60vh, 420px);
+  overflow-y: auto;
+}
+.sessions-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  text-decoration: none;
+}
+.sessions-item[aria-current="page"] {
+  font-weight: var(--w-bold);
+}
+.sessions-item-name,
+.sessions-item-path {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sessions-item-path,
+.sessions-empty {
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+.sessions-empty {
+  padding: 8px 10px;
+}
+@media (max-width: 640px) {
+  .sessions-wrap {
+    display: none;
+  }
+}

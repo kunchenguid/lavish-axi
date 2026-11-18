@@ -361,6 +361,7 @@ async function createChromeHarness({
   element("layoutGateBypass").hidden = true;
   element("shareDialog").hidden = true;
   element("moreMenu").hidden = true;
+  element("sessionsMenu").hidden = true;
   element("warningsDrawer").hidden = true;
   element("revisionsDrawer").hidden = true;
   const whiteboardFrame = element("whiteboardFrame");
