@@ -350,6 +350,17 @@ function artifactFrameSrcForLoad(load) {
   );
 }
 
+// Assigning `src` to an iframe that already holds a document adds a session-history entry to the
+// tab, so every live reload grew `history.length` until Chromium refused `window.close()` (#426).
+// After the first load, replace the frame's location instead; the `src` attribute keeps that URL.
+function navigateArtifactFrame(url) {
+  if (frame.src && frame.contentWindow) {
+    frame.contentWindow.location.replace(url);
+    return;
+  }
+  frame.src = url;
+}
+
 function escapeHtml(value) {
   return String(value).replace(
     /[&<>"']/g,
@@ -3484,7 +3495,7 @@ async function replaceArtifactFrame({ recoveryRetry = false } = {}) {
     resetRevisionLegend();
     startLayoutGateCycle();
     const currentSrc = frame.src || "about:blank";
-    frame.src = currentSrc + (currentSrc.includes("?") ? "&" : "?") + "lavish_reload=" + Date.now();
+    navigateArtifactFrame(currentSrc + (currentSrc.includes("?") ? "&" : "?") + "lavish_reload=" + Date.now());
     return true;
   }
   const requestSequence = ++artifactLoadRequestSequence;
@@ -3605,7 +3616,7 @@ async function replaceArtifactFrame({ recoveryRetry = false } = {}) {
   // The next document reports its own registry once it loads; until then the
   // previous revision's legend would point at blocks that may no longer exist.
   resetRevisionLegend();
-  frame.src = artifactFrameSrcForLoad({ revision, token });
+  navigateArtifactFrame(artifactFrameSrcForLoad({ revision, token }));
   return true;
 }
 
