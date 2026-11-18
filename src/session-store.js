@@ -112,15 +112,18 @@ export class SessionStore {
     });
   }
 
-  async upsertSession(file, url) {
+  // `name` is the reviewer-facing label shown in the session directory. `undefined` keeps the
+  // stored name, so reopening without `--name` never erases it; a string (even empty) replaces it.
+  async upsertSession(file, url, options = /** @type {{ name?: string }} */ ({})) {
+    const { name } = options;
     // `canonicalFile` (a realpath) does not touch state, so resolve it before
     // taking the lock and keep only the read-modify-write inside the critical
     // section.
     const absolute = await canonicalFile(file);
-    return this.lock.runExclusive(() => this.#upsertSessionLocked(absolute, url));
+    return this.lock.runExclusive(() => this.#upsertSessionLocked(absolute, url, name));
   }
 
-  async #upsertSessionLocked(absolute, url) {
+  async #upsertSessionLocked(absolute, url, name) {
     const key = sessionKey(absolute);
     const state = await this.readState();
     const existing = state.sessions[key] || {};
@@ -130,6 +133,7 @@ export class SessionStore {
       key,
       file: absolute,
       url,
+      name: name === undefined ? (typeof existing.name === "string" ? existing.name : "") : name,
       status: existingStatus === "feedback" && existingPrompts.length === 0 ? "open" : existingStatus,
       pending_prompts: existing.pending_prompts || 0,
       prompts: existingPrompts,

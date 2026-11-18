@@ -7,7 +7,7 @@ import test from "node:test";
 process.env.LAVISH_AXI_HOST = "127.0.0.1";
 process.env.LAVISH_AXI_LINK_HOST = "127.0.0.1";
 
-import { createChromeHtml, serve } from "../src/server.js";
+import { createChromeHtml, normalizeSessionName, serve } from "../src/server.js";
 
 async function withServer(fn) {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-directory-"));
@@ -80,4 +80,44 @@ test("the chrome navbar carries a session switcher with an escaped label", () =>
   assert.match(html, /id="sessionsMenu"/);
   assert.ok(html.includes("&lt;plan&gt;/a.html"));
   assert.doesNotMatch(html, /<plan>\/a\.html/);
+});
+
+test("normalizeSessionName trims, collapses whitespace, and bounds the name", () => {
+  assert.equal(normalizeSessionName("  Checkout   flow \n"), "Checkout flow");
+  assert.equal(normalizeSessionName(""), "");
+  assert.equal(normalizeSessionName(undefined), "");
+  assert.equal(normalizeSessionName(42), "");
+  assert.equal(normalizeSessionName("a\u0000b\u001bc"), "abc");
+  assert.equal(normalizeSessionName("x".repeat(500)).length, 80);
+});
+
+test("a stored name replaces the default label in the directory, root page and chrome", async () => {
+  await withServer(async ({ base, open }) => {
+    const a = await open("a.html", { name: "<b>Checkout</b> flow" });
+    const list = await fetch(`${base}/api/sessions`).then((r) => r.json());
+    assert.equal(list.sessions.find((s) => s.key === a.body.key).name, "<b>Checkout</b> flow");
+    const root = await fetch(`${base}/`, { headers: { accept: "text/html" } }).then((r) => r.text());
+    assert.doesNotMatch(root, /<b>Checkout/);
+    assert.match(root, /&lt;b&gt;Checkout&lt;\/b&gt; flow/);
+    const chrome = createChromeHtml(
+      { key: "abc", file: "/tmp/a.html", name: "My <plan>", prompts: [], chat: [] },
+      { title: "t" },
+    );
+    assert.ok(chrome.includes("My &lt;plan&gt;"));
+    assert.doesNotMatch(chrome, /My <plan>/);
+  });
+});
+
+test("reopening without a name keeps the stored name and a new name renames it", async () => {
+  await withServer(async ({ base, open }) => {
+    const first = await open("a.html", { name: "Plan v1" });
+    await open("a.html");
+    let list = await fetch(`${base}/api/sessions`).then((r) => r.json());
+    assert.equal(list.sessions[0].name, "Plan v1");
+    await open("a.html", { name: "Plan v2" });
+    list = await fetch(`${base}/api/sessions`).then((r) => r.json());
+    assert.equal(list.sessions.length, 1);
+    assert.equal(list.sessions[0].key, first.body.key);
+    assert.equal(list.sessions[0].name, "Plan v2");
+  });
 });

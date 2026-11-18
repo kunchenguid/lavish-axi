@@ -72,7 +72,7 @@ That makes the session key **derived, not secret**: anyone who learns the artifa
 
 #### Session directory
 
-`GET /api/sessions` and the root page `/` list open (not ended) sessions through `serializeSessionDirectory`: key, name, display path, status, url, updated_at. Never add prompts, chat, or snapshots to it. Listing a key grants nothing; every mutating route keeps its own guard. Labels come from `sessionDisplayName` and are display text: every renderer escapes them (the chrome switcher uses `textContent`).
+`GET /api/sessions` and the root page `/` list open (not ended) sessions through `serializeSessionDirectory`: key, name, display path, status, url, updated_at. Never add prompts, chat, or snapshots to it. Listing a key grants nothing; every mutating route keeps its own guard. `session.name` is display text: `normalizeSessionName` bounds it, `upsertSession` keeps it when the caller passes `undefined`, and every renderer escapes it (the chrome switcher uses `textContent`).
 
 ### Passive layout-warning inbox
 
