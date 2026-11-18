@@ -127,6 +127,10 @@ const annotationSwitch = /** @type {HTMLButtonElement} */ (document.getElementBy
 const moreWrap = /** @type {HTMLDivElement} */ (document.getElementById("moreWrap"));
 const moreButton = /** @type {HTMLButtonElement} */ (document.getElementById("moreButton"));
 const moreMenu = /** @type {HTMLDivElement} */ (document.getElementById("moreMenu"));
+const sessionsWrap = /** @type {HTMLDivElement} */ (document.getElementById("sessionsWrap"));
+const sessionsButton = /** @type {HTMLButtonElement} */ (document.getElementById("sessionsButton"));
+const sessionsMenu = /** @type {HTMLDivElement} */ (document.getElementById("sessionsMenu"));
+const sessionsList = /** @type {HTMLDivElement} */ (document.getElementById("sessionsList"));
 const reloadArtifactButton = /** @type {HTMLButtonElement} */ (document.getElementById("reloadArtifact"));
 const copySnapshotButton = /** @type {HTMLButtonElement} */ (document.getElementById("copySnapshot"));
 const exportArtifactButton = /** @type {HTMLButtonElement} */ (document.getElementById("exportArtifact"));
@@ -877,6 +881,46 @@ function setMenuOpen(button, menu, open) {
 
 function closeMenus() {
   setMenuOpen(moreButton, moreMenu, false);
+  setMenuOpen(sessionsButton, sessionsMenu, false);
+}
+
+// The switcher only links to other sessions' chrome pages; it holds no authority. Names and
+// paths come from the server as plain text and are rendered with textContent, never as HTML.
+async function refreshSessionsMenu() {
+  const message = (text) => {
+    sessionsList.replaceChildren();
+    const note = document.createElement("div");
+    note.className = "sessions-empty";
+    note.textContent = text;
+    sessionsList.append(note);
+  };
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 4000);
+    const response = await fetch("/api/sessions", { signal: controller.signal }).finally(() => clearTimeout(timer));
+    if (!response.ok) throw new Error("status " + response.status);
+    const body = await response.json();
+    const sessions = Array.isArray(body.sessions) ? body.sessions : [];
+    sessionsList.replaceChildren();
+    for (const entry of sessions) {
+      const link = document.createElement("a");
+      link.className = "menu-item sessions-item";
+      link.setAttribute("role", "menuitem");
+      link.href = "/session/" + encodeURIComponent(String(entry.key));
+      if (entry.key === sessionData.key) link.setAttribute("aria-current", "page");
+      const name = document.createElement("span");
+      name.className = "sessions-item-name";
+      name.textContent = String(entry.name || "");
+      const file = document.createElement("span");
+      file.className = "sessions-item-path";
+      file.textContent = String(entry.file || "");
+      link.append(name, file);
+      sessionsList.append(link);
+    }
+    if (!sessions.length) message("No other open sessions.");
+  } catch {
+    message("Could not load sessions.");
+  }
 }
 
 function toggleMenu(button, menu) {
@@ -4567,6 +4611,13 @@ moreButton.onclick = () => {
   closeRevisionsDrawer();
   toggleMenu(moreButton, moreMenu);
 };
+sessionsButton.onclick = () => {
+  closeWarningsDrawer();
+  closeRevisionsDrawer();
+  const opening = sessionsMenu.hidden;
+  toggleMenu(sessionsButton, sessionsMenu);
+  if (opening) refreshSessionsMenu();
+};
 warningsButton.onclick = toggleWarningsDrawer;
 revisionsButton.onclick = () => {
   closeWarningsDrawer();
@@ -4700,6 +4751,7 @@ if (outdatedDismissButton) {
 document.addEventListener("mousedown", (event) => {
   const target = /** @type {Node} */ (event.target);
   if (!moreMenu.hidden && !moreWrap.contains(target)) setMenuOpen(moreButton, moreMenu, false);
+  if (!sessionsMenu.hidden && !sessionsWrap.contains(target)) setMenuOpen(sessionsButton, sessionsMenu, false);
   if (warningsDrawerOpen && !warningsWrap.contains(target)) closeWarningsDrawer();
   if (revisionsDrawerOpen && !revisionsWrap.contains(target)) closeRevisionsDrawer();
 });
@@ -4724,7 +4776,7 @@ document.addEventListener("keydown", (event) => {
       closeRevisionsDrawer({ restoreFocus: true });
     } else if (warningsDrawerOpen) {
       closeWarningsDrawer({ restoreFocus: true });
-    } else if (!moreMenu.hidden) {
+    } else if (!moreMenu.hidden || !sessionsMenu.hidden) {
       closeMenus();
     } else if (sheetOpen && isMobileSheet()) {
       setSheetOpen(false);

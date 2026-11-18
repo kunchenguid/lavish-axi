@@ -70,6 +70,10 @@ That makes the session key **derived, not secret**: anyone who learns the artifa
    Every poll exit path has to undo the presence it set: `/api/poll` subscribes to request and response closure before its first `await`, re-checks closure and replacement after destructive feedback takes, and reconciles a browser disconnect that occurred before event handlers were armed. This prevents abandoned or displaced polls from stranding ownership, presence, or consumed feedback.
    `--agent-reply` and `--agent-reply-file` publish a chat message through the same atomic poll claim before waiting, rendered in the browser conversation panel via the live stream; README's CLI reference owns when to use each input. `lavish-axi reply` posts that same message to `POST /api/:key/agent-reply` and exits 0 only after the route answers `sent`. The whole receipt request (connect, headers, body) shares one deadline, `AGENT_REPLY_RECEIPT_TIMEOUT_MS`, and a timeout exits non-zero. It must not claim a poll: a poll stays open until feedback arrives, so it cannot be the acceptance receipt.
 
+#### Session directory
+
+`GET /api/sessions` and the root page `/` list open (not ended) sessions through `serializeSessionDirectory`: key, name, display path, status, url, updated_at. Never add prompts, chat, or snapshots to it. Listing a key grants nothing; every mutating route keeps its own guard. Labels come from `sessionDisplayName` and are display text: every renderer escapes them (the chrome switcher uses `textContent`).
+
 ### Passive layout-warning inbox
 
 `src/layout-warnings.js` is the whole lifecycle, as pure functions over stored records, so it is unit-testable without a browser or a server; `SessionStore` and the routes only persist and serve what it returns.
