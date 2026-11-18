@@ -19,7 +19,7 @@ const servedChromeIds = new Set(
 
 const SERVED_TAB_ICON = "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'/>";
 
-/** @typedef {{ key: string, file: string, layoutGateEnabled?: boolean, layoutGateMaxHoldMs?: number, modeToggleHotkeyKey?: string, initialChat?: any[], initialChatAckIds?: string[], initialChatRevision?: number, initialLayoutWarnings?: any[], chromeLoadToken?: string, initialArtifactRevision?: number, initialArtifactLoadToken?: string, initialArtifactLoadSequence?: number, attachmentMaxBytes?: number, attachmentMaxCount?: number, attachmentAcceptedMime?: string[], initialEnded?: boolean, initialEndedBy?: string | null, revisionPalette?: { hex: string, borderStyle: string, pattern: string }[] }} HarnessSessionData */
+/** @typedef {{ key: string, file: string, layoutGateEnabled?: boolean, layoutGateMaxHoldMs?: number, modeToggleHotkeyKey?: string, initialChat?: any[], initialChatAckIds?: string[], initialChatRevision?: number, initialLayoutWarnings?: any[], chromeLoadToken?: string, initialArtifactRevision?: number, initialArtifactLoadToken?: string, initialArtifactLoadSequence?: number, attachmentMaxBytes?: number, attachmentMaxCount?: number, attachmentAcceptedMime?: string[], initialEnded?: boolean, initialEndedBy?: string | null, initialDrafts?: any[], draftMaxPrompts?: number, revisionPalette?: { hex: string, borderStyle: string, pattern: string }[] }} HarnessSessionData */
 /** @type {HarnessSessionData} */
 const defaultSessionData = {
   key: "abc",
@@ -73,7 +73,7 @@ function identicalProjectionNote(offset) {
 }
 
 const UNSENT_OWNERSHIP_COPY =
-  "Unsent answers stay in the tab or window where you entered them; taking over in another window does not bring them along.";
+  "Unsent notes are saved with this review, so reopening the link in a new tab or window brings them back.";
 
 async function createChromeHarness({
   fetchImpl = /** @type {(url?: any, init?: any) => Promise<any>} */ (
@@ -88,6 +88,12 @@ async function createChromeHarness({
   localStorageThrows = false,
   beginLoadResponses = [],
   handoffResponses = [],
+  draftResponses = [],
+  // How the browser reports this page load (`performance.getEntriesByType("navigation")`). Left
+  // unset, the window has no `performance`, as in a browser without Navigation Timing.
+  navigationType = "",
+  // Models a full sessionStorage: `setItem` throws a QuotaExceededError for each key it matches.
+  sessionStorageRefuses = /** @type {(key: string) => boolean} */ (() => false),
   storedQueue = null,
   // Opt-in frozen clock. `reloadChromeAfterServerRestart` waits on wall-clock deadlines, so a
   // test that needs one to expire has to own `Date.now()` rather than sleep through it.
@@ -121,6 +127,7 @@ async function createChromeHarness({
   const srcLoads = [];
   const beginRequests = [];
   const artifactBeginRequests = [];
+  const draftRequests = [];
   const focusLog = [];
   const clipboardWrites = [];
   let activeElement = null;
@@ -371,6 +378,13 @@ async function createChromeHarness({
   };
 
   const harnessFetch = async (url, init) => {
+    // The server-side mirror of unsent notes is written on every queue change. It is recorded
+    // apart from `fetchImpl` so tests about Send see only the requests Send makes.
+    if (String(url).endsWith("/drafts")) {
+      draftRequests.push({ url, init, body: JSON.parse(init.body) });
+      if (draftResponses.length > 0) return draftResponses.shift();
+      return { ok: true, json: async () => ({ status: "saved" }) };
+    }
     if (String(url).includes("/chrome-loads/begin")) {
       beginRequests.push({ url, init });
       if (handoffResponses.length > 0) return handoffResponses.shift();
@@ -397,9 +411,13 @@ async function createChromeHarness({
   let clockNow = Date.now();
   const context = {
     AbortController,
+    TextEncoder,
     clearTimeout: fakeClearTimeout,
     console,
     ...(fakeClock ? { Date: { now: () => clockNow, parse: Date.parse } } : {}),
+    ...(navigationType
+      ? { performance: { getEntriesByType: (type) => (type === "navigation" ? [{ type: navigationType }] : []) } }
+      : {}),
     fetch: harnessFetch,
     location: {
       protocol: "http:",
@@ -454,6 +472,7 @@ async function createChromeHarness({
     document: {
       // The tab as the server served it: the artifact's title and its icon link.
       title: "Plan \u00b7 Lavish",
+      visibilityState: "visible",
       body: element("body"),
       head: { appendChild: (link) => (tabIcon = link) },
       querySelector: (selector) => (selector === 'link[rel~="icon"]' ? tabIcon : null),
@@ -490,6 +509,7 @@ async function createChromeHarness({
         return storage.has(key) ? storage.get(key) : null;
       },
       setItem(key, value) {
+        if (sessionStorageRefuses(key)) throw new Error("QuotaExceededError");
         storage.set(key, String(value));
       },
       removeItem(key) {
@@ -681,6 +701,12 @@ async function createChromeHarness({
     srcLoads,
     beginRequests,
     artifactBeginRequests,
+    draftRequests,
+    windowListeners,
+    setVisibility(state) {
+      context.document.visibilityState = state;
+      for (const { handler } of documentListeners.get("visibilitychange") || []) handler({});
+    },
     artifactLoadToken: frameLoadToken,
     mediaQueries,
     setMobile(matches) {
@@ -9442,4 +9468,499 @@ test("a window that is not the artifact frame cannot set the tab", async () => {
     });
   }
   assert.equal(chrome.tab().title, "Plan \u00b7 Lavish");
+});
+
+// Unsent notes used to live only in the tab's sessionStorage: closing the tab (or an in-app
+// browser that discards it) lost them, and reopening the link showed an empty queue. The chrome
+// now mirrors them to the server, and a tab opened later adopts them.
+test("queued notes are mirrored to the server as they change", async () => {
+  const chrome = await createChromeHarness();
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Shorter headline", selector: "h1", tag: "h1", text: "Plan" },
+  });
+  await flushPromises();
+  const saved = chrome.draftRequests.at(-1);
+  assert.equal(saved.init.method, "PUT");
+  assert.equal(saved.url, "/api/abc/drafts");
+  assert.equal(saved.init.keepalive, true, "a save started as the tab closes still lands");
+  assertPromptIdentity(saved.body.tab);
+  assert.equal(chrome.storage.get("lavish-axi:draft-tab:abc"), saved.body.tab, "a reload keeps the same record");
+  assert.deepEqual(
+    saved.body.queue.map((prompt) => prompt.prompt),
+    ["Shorter headline"],
+  );
+  assert.equal(saved.body.queue[0].prompt_id, chrome.queued()[0].prompt_id);
+
+  const [removeButton] = chrome.element("queuedLog").querySelectorAll(".queued-remove");
+  removeButton.click({ stopPropagation() {}, preventDefault() {} });
+  await flushPromises();
+  await flushPromises();
+  assert.deepEqual(chrome.draftRequests.at(-1).body.queue, []);
+});
+
+test("a draft save made while another is in flight is sent after it, never dropped", async () => {
+  /** @type {() => void} */
+  let release = () => {};
+  const chrome = await createChromeHarness({
+    draftResponses: [new Promise((resolve) => (release = () => resolve({ ok: true, json: async () => ({}) })))],
+  });
+  chrome.sendFrameMessage({ type: "lavish:queuePrompt", prompt: { prompt: "One", selector: "h1", tag: "h1" } });
+  chrome.sendFrameMessage({ type: "lavish:queuePrompt", prompt: { prompt: "Two", selector: "p", tag: "p" } });
+  await flushPromises();
+  assert.equal(chrome.draftRequests.length, 1);
+  release();
+  await flushPromises();
+  await flushPromises();
+  assert.equal(chrome.draftRequests.length, 2);
+  assert.deepEqual(
+    chrome.draftRequests[1].body.queue.map((prompt) => prompt.prompt),
+    ["One", "Two"],
+  );
+});
+
+test("a new tab adopts the unsent notes an earlier tab left on the server", async () => {
+  const earlier = {
+    tab: "closedTab",
+    queue: [
+      { prompt: "Shorter headline", selector: "h1", tag: "h1", text: "Plan", prompt_id: "note-1" },
+      { prompt: "Already sent", selector: "p", tag: "p", prompt_id: "note-sent" },
+      { prompt: "Plan B", selector: "#b", tag: "choice", _lavishQueueKey: "plan", prompt_id: "note-2" },
+    ],
+    review_state: { card: { selector: "h2", text: "Half-written thought" }, fields: [] },
+    seq: 41,
+    updated_at: "2026-11-09T10:00:00.000Z",
+  };
+  const chrome = await createChromeHarness({
+    sessionData: { ...defaultSessionData, initialDrafts: [earlier], initialChatAckIds: ["note-sent"] },
+    artifactSrc: "/artifact/abc/index.html",
+  });
+  await flushPromises();
+
+  assert.deepEqual(
+    chrome.queued().map((prompt) => [prompt.prompt, prompt.prompt_id]),
+    [
+      ["Shorter headline", "note-1"],
+      ["Plan B", "note-2"],
+    ],
+    "identity is kept, so a note the other tab also sends settles here instead of sending twice",
+  );
+  assert.match(chrome.element("queuedLog").innerHTML, /Shorter headline/);
+  assert.equal(chrome.element("sendHint").hidden, false);
+  assert.match(chrome.element("sendHint").textContent, /Restored 2 unsent notes/);
+
+  const adoption = chrome.draftRequests.at(-1).body;
+  assert.deepEqual(
+    adoption.adopted,
+    [{ tab: "closedTab", seq: 41, review_state: true }],
+    "the earlier tab's record is retired in the same write, at the seq this tab was served",
+  );
+  assert.notEqual(adoption.tab, "closedTab");
+  assert.deepEqual(
+    adoption.queue.map((prompt) => prompt.prompt_id),
+    ["note-1", "note-2"],
+  );
+
+  // The open card's text comes back too, through the same replay a reload uses.
+  chrome.frame.dispatch("load");
+  const restore = chrome.postedToFrame.findLast((message) => message.type === "lavish:restoreReviewState");
+  assert.equal(restore?.state?.card?.text, "Half-written thought");
+
+  // Once confirmed, the adopted record is not named again.
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Third", selector: "p", tag: "p" },
+    artifact_load_token: chrome.artifactLoadToken(),
+  });
+  for (let i = 0; i < 4; i += 1) await flushPromises();
+  assert.equal(chrome.draftRequests.at(-1).body.queue.length, 3);
+  assert.equal(chrome.draftRequests.at(-1).body.adopted, undefined);
+});
+
+test("a tab's own queue keeps its answer over an adopted one with the same replace-key", async () => {
+  const chrome = await createChromeHarness({
+    storedQueue: [{ prompt: "Plan A", selector: "#a", tag: "choice", _lavishQueueKey: "plan", prompt_id: "mine" }],
+    sessionData: {
+      ...defaultSessionData,
+      initialDrafts: [
+        {
+          tab: "otherTab",
+          queue: [{ prompt: "Plan B", selector: "#b", tag: "choice", _lavishQueueKey: "plan", prompt_id: "theirs" }],
+          review_state: null,
+          updated_at: "2026-11-09T10:00:00.000Z",
+        },
+      ],
+    },
+  });
+  await flushPromises();
+  assert.deepEqual(
+    chrome.queued().map((prompt) => prompt.prompt),
+    ["Plan A"],
+  );
+  assert.deepEqual(chrome.draftRequests.at(-1).body.adopted, [{ tab: "otherTab", seq: 0, review_state: true }]);
+});
+
+test("annotation-card typing is saved after a pause and flushed when the page is hidden", async () => {
+  const chrome = await createChromeHarness();
+  const card = { card: { selector: "h1", text: "Half a thought" }, fields: [] };
+  chrome.sendFrameMessage({ type: "lavish:reviewState", state: card });
+  await flushPromises();
+  assert.equal(chrome.draftRequests.length, 0, "typing is debounced");
+
+  chrome.setVisibility("hidden");
+  await flushPromises();
+  assert.equal(chrome.draftRequests.length, 1);
+  assert.equal(chrome.draftRequests[0].init.keepalive, true);
+  assert.deepEqual(chrome.draftRequests[0].body.review_state, card);
+
+  // Nothing changed since the server confirmed it, so hiding again sends nothing.
+  chrome.setVisibility("hidden");
+  for (const handler of chrome.windowListeners.get("pagehide") || []) handler({});
+  await flushPromises();
+  assert.equal(chrome.draftRequests.length, 1);
+
+  // A further edit is saved by the debounce timer.
+  chrome.sendFrameMessage({ type: "lavish:reviewState", state: { card: { selector: "h1", text: "A whole thought" } } });
+  chrome.runTimers(400);
+  await flushPromises();
+  assert.equal(chrome.draftRequests.at(-1).body.review_state.card.text, "A whole thought");
+});
+
+test("an ended review neither adopts nor saves drafts", async () => {
+  const chrome = await createChromeHarness({
+    sessionData: {
+      ...defaultSessionData,
+      initialEnded: true,
+      initialDrafts: [
+        {
+          tab: "otherTab",
+          queue: [{ prompt: "Late", selector: "h1", tag: "h1", prompt_id: "late" }],
+          review_state: null,
+          updated_at: "2026-11-09T10:00:00.000Z",
+        },
+      ],
+    },
+  });
+  chrome.setVisibility("hidden");
+  await flushPromises();
+  assert.deepEqual(chrome.queued(), []);
+  assert.equal(chrome.draftRequests.length, 0);
+});
+
+test("a booting tab with its own open card does not retire another tab's card text", async () => {
+  const mine = { card: { selector: "h1", text: "My own thought" }, fields: [] };
+  const theirs = { card: { selector: "h2", text: "Their half-written thought" }, fields: [] };
+  const chrome = await createChromeHarness({
+    storage: new Map([["lavish-axi:review-state:abc", JSON.stringify(mine)]]),
+    sessionData: {
+      ...defaultSessionData,
+      initialDrafts: [
+        {
+          tab: "cardTab",
+          queue: [{ prompt: "Their note", selector: "p", tag: "p", prompt_id: "their-note" }],
+          review_state: theirs,
+          updated_at: "2026-11-09T10:01:00.000Z",
+        },
+        {
+          tab: "queueTab",
+          queue: [{ prompt: "Other note", selector: "h3", tag: "h3", prompt_id: "other-note" }],
+          review_state: null,
+          updated_at: "2026-11-09T10:00:00.000Z",
+        },
+      ],
+    },
+  });
+  await flushPromises();
+  assert.deepEqual(
+    chrome.queued().map((prompt) => prompt.prompt_id),
+    ["their-note", "other-note"],
+  );
+  const write = chrome.draftRequests.at(-1).body;
+  assert.deepEqual(
+    write.adopted,
+    [
+      { tab: "cardTab", seq: 0, review_state: false },
+      { tab: "queueTab", seq: 0, review_state: true },
+    ],
+    "the queue is taken from both; the card text this tab could not take stays",
+  );
+  assert.deepEqual(write.review_state, mine);
+});
+
+test("a hide flush that overlaps an in-flight save is sent with a newer sequence", async () => {
+  /** @type {(value: any) => void} */
+  let release = () => {};
+  const chrome = await createChromeHarness({
+    draftResponses: [new Promise((resolve) => (release = resolve))],
+  });
+  chrome.sendFrameMessage({ type: "lavish:queuePrompt", prompt: { prompt: "One", selector: "h1", tag: "h1" } });
+  await flushPromises();
+  chrome.sendFrameMessage({
+    type: "lavish:reviewState",
+    state: { card: { selector: "p", text: "Typing" }, fields: [] },
+  });
+  chrome.setVisibility("hidden");
+  await flushPromises();
+  assert.equal(chrome.draftRequests.length, 2, "the flush does not wait for the in-flight save");
+  const [first, flush] = chrome.draftRequests.map((request) => request.body);
+  assert.ok(Number.isSafeInteger(first.seq) && first.seq > 0);
+  assert.ok(flush.seq > first.seq, "the server refuses the older body if it lands last");
+  assert.equal(flush.review_state.card.text, "Typing");
+
+  // The older save confirming late does not mark the newer body as the one the server holds.
+  release({ ok: true, json: async () => ({}) });
+  for (let i = 0; i < 4; i += 1) await flushPromises();
+  const sent = chrome.draftRequests.length;
+  chrome.setVisibility("hidden");
+  await flushPromises();
+  assert.equal(chrome.draftRequests.length, sent, "the flush itself was confirmed");
+});
+
+test("a reload keeps the tab's draft record; a duplicated tab gets its own and adopts the original's", async () => {
+  const stored = {
+    tab: "originalTab",
+    queue: [{ prompt: "Original note", selector: "h1", tag: "h1", prompt_id: "orig-1" }],
+  };
+  const record = { ...stored, review_state: null, updated_at: "2026-11-09T10:00:00.000Z" };
+
+  const reloaded = await createChromeHarness({
+    navigationType: "reload",
+    storage: new Map([["lavish-axi:draft-tab:abc", "originalTab"]]),
+    storedQueue: stored.queue,
+    sessionData: { ...defaultSessionData, initialDrafts: [record] },
+  });
+  reloaded.sendFrameMessage({ type: "lavish:queuePrompt", prompt: { prompt: "More", selector: "p", tag: "p" } });
+  await flushPromises();
+  assert.equal(reloaded.draftRequests.at(-1).body.tab, "originalTab");
+  assert.equal(reloaded.draftRequests.at(-1).body.adopted, undefined);
+
+  // Duplicating a tab copies its sessionStorage, tab id included. Writing under that shared id
+  // would overwrite the original's record, so the duplicate mints its own and adopts the original.
+  for (const navigationType of ["navigate", ""]) {
+    const duplicate = await createChromeHarness({
+      navigationType,
+      storage: new Map([["lavish-axi:draft-tab:abc", "originalTab"]]),
+      storedQueue: stored.queue,
+      sessionData: { ...defaultSessionData, initialDrafts: [record] },
+    });
+    await flushPromises();
+    const write = duplicate.draftRequests.at(-1).body;
+    assert.notEqual(write.tab, "originalTab");
+    assert.equal(duplicate.storage.get("lavish-axi:draft-tab:abc"), write.tab);
+    assert.deepEqual(write.adopted, [{ tab: "originalTab", seq: 0, review_state: true }]);
+    assert.deepEqual(
+      write.queue.map((prompt) => prompt.prompt_id),
+      ["orig-1"],
+    );
+  }
+});
+
+test("a reload keeps this tab's local queue over its own older server copy", async () => {
+  // The reviewer removed "Removed" and reloaded before that removal reached the server.
+  const chrome = await createChromeHarness({
+    navigationType: "reload",
+    storage: new Map([
+      ["lavish-axi:draft-tab:abc", "thisTab"],
+      ["lavish-axi:draft-local-saved:abc", "true"],
+    ]),
+    storedQueue: [{ prompt: "Kept", selector: "h1", tag: "h1", prompt_id: "kept" }],
+    sessionData: {
+      ...defaultSessionData,
+      initialDrafts: [
+        {
+          tab: "thisTab",
+          seq: 5,
+          queue: [
+            { prompt: "Kept", selector: "h1", tag: "h1", prompt_id: "kept" },
+            { prompt: "Removed", selector: "p", tag: "p", prompt_id: "removed" },
+          ],
+          review_state: null,
+          updated_at: "2026-11-09T10:00:00.000Z",
+        },
+      ],
+    },
+  });
+  await flushPromises();
+  assert.deepEqual(
+    chrome.queued().map((prompt) => prompt.prompt_id),
+    ["kept"],
+  );
+  assert.equal(chrome.draftRequests.length, 0, "nothing was adopted, so nothing is written back");
+});
+
+test("a reload with an empty local queue does not restore its own server copy", async () => {
+  const chrome = await createChromeHarness({
+    navigationType: "reload",
+    storage: new Map([
+      ["lavish-axi:draft-tab:abc", "thisTab"],
+      ["lavish-axi:draft-local-saved:abc", "true"],
+    ]),
+    sessionData: {
+      ...defaultSessionData,
+      initialDrafts: [
+        {
+          tab: "thisTab",
+          seq: 5,
+          queue: [{ prompt: "Removed", selector: "p", tag: "p", prompt_id: "removed" }],
+          review_state: { card: { selector: "h1", text: "Discarded card" }, fields: [] },
+          updated_at: "2026-11-09T10:00:00.000Z",
+        },
+      ],
+    },
+  });
+  await flushPromises();
+  assert.deepEqual(chrome.queued(), []);
+  chrome.frame.dispatch("load");
+  const restore = chrome.postedToFrame.findLast((message) => message.type === "lavish:restoreReviewState");
+  assert.notEqual(restore?.state?.card?.text, "Discarded card");
+});
+
+test("a draft save too large for keepalive by encoded bytes goes as an ordinary request", async () => {
+  const chrome = await createChromeHarness();
+  // 25,000 CJK characters are 75,000 UTF-8 bytes: under a 60,000 count of characters, over the
+  // browser's 64 KiB keepalive budget.
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "\u4e2d".repeat(25_000), selector: "h1", tag: "h1" },
+  });
+  await flushPromises();
+  assert.equal(chrome.draftRequests.at(-1).init.keepalive, false);
+});
+
+test("a booting tab never retires a record whose notes it could not all hold", async () => {
+  const notes = (prefix, count) =>
+    Array.from({ length: count }, (_, i) => ({
+      prompt: `${prefix} ${i}`,
+      selector: "p",
+      tag: "p",
+      prompt_id: `${prefix}${i}`,
+    }));
+  const chrome = await createChromeHarness({
+    sessionData: {
+      ...defaultSessionData,
+      draftMaxPrompts: 5,
+      initialDrafts: [
+        { tab: "tabA", seq: 3, queue: notes("a", 3), review_state: null, updated_at: "2026-11-09T10:01:00.000Z" },
+        { tab: "tabB", seq: 4, queue: notes("b", 3), review_state: null, updated_at: "2026-11-09T10:00:00.000Z" },
+      ],
+    },
+  });
+  await flushPromises();
+  assert.deepEqual(
+    chrome.queued().map((prompt) => prompt.prompt_id),
+    ["a0", "a1", "a2"],
+    "tab B's notes do not all fit, so none of them is copied",
+  );
+  assert.deepEqual(
+    chrome.draftRequests.at(-1).body.adopted,
+    [{ tab: "tabA", seq: 3, review_state: true }],
+    "tab B's record stays whole on the server",
+  );
+});
+
+test("a reload whose last local save failed restores its own server copy", async () => {
+  const storage = new Map();
+  // Storage is full: the small tab id was stored, but the queue and card text were not.
+  /** @type {(key: string) => boolean} */
+  const refuses = (key) => key === "lavish-axi:queued:abc" || key === "lavish-axi:review-state:abc";
+  const first = await createChromeHarness({ storage, sessionStorageRefuses: refuses });
+  first.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Only on the server", selector: "h1", tag: "h1" },
+  });
+  first.sendFrameMessage({
+    type: "lavish:reviewState",
+    state: { card: { selector: "p", text: "Card only on the server" }, fields: [] },
+  });
+  await flushPromises();
+  first.setVisibility("hidden");
+  await flushPromises();
+  const saved = first.draftRequests.at(-1).body;
+  assert.equal(saved.review_state.card.text, "Card only on the server");
+  assert.equal(storage.has("lavish-axi:queued:abc"), false);
+
+  const reloaded = await createChromeHarness({
+    navigationType: "reload",
+    storage,
+    sessionData: {
+      ...defaultSessionData,
+      initialDrafts: [{ ...saved, updated_at: "2026-11-09T10:00:00.000Z" }],
+    },
+  });
+  await flushPromises();
+  assert.deepEqual(
+    reloaded.queued().map((prompt) => prompt.prompt),
+    ["Only on the server"],
+  );
+  const write = reloaded.draftRequests.at(-1).body;
+  assert.equal(write.tab, saved.tab, "the reload still owns its record");
+  assert.equal(write.adopted, undefined, "its own record is replaced by its write, not adopted");
+  assert.equal(write.review_state.card.text, "Card only on the server");
+});
+
+test("a reload after a failed local save keeps its own card and leaves another tab's card on the server", async () => {
+  const storage = new Map();
+  /** @type {(key: string) => boolean} */
+  const refuses = (key) => key === "lavish-axi:queued:abc" || key === "lavish-axi:review-state:abc";
+  const first = await createChromeHarness({ storage, sessionStorageRefuses: refuses });
+  first.sendFrameMessage({
+    type: "lavish:reviewState",
+    state: { card: { selector: "p", text: "Own card" }, fields: [] },
+  });
+  await flushPromises();
+  first.setVisibility("hidden");
+  await flushPromises();
+  const saved = first.draftRequests.at(-1).body;
+
+  const reloaded = await createChromeHarness({
+    navigationType: "reload",
+    storage,
+    sessionData: {
+      ...defaultSessionData,
+      // The other tab's record is newer, so the server lists it first.
+      initialDrafts: [
+        {
+          tab: "tabOther",
+          seq: 9,
+          queue: [],
+          review_state: { card: { selector: "h1", text: "Other card" }, fields: [] },
+          updated_at: "2026-11-09T10:05:00.000Z",
+        },
+        { ...saved, updated_at: "2026-11-09T10:00:00.000Z" },
+      ],
+    },
+  });
+  await flushPromises();
+  const write = reloaded.draftRequests.at(-1).body;
+  assert.equal(write.tab, saved.tab);
+  assert.equal(write.review_state.card.text, "Own card", "the tab's own card is restored");
+  assert.deepEqual(
+    write.adopted,
+    [{ tab: "tabOther", seq: 9, review_state: false }],
+    "the other tab's card was not kept, so it stays on the server",
+  );
+});
+
+test("a failed draft save says the notes are only in this tab until a save is confirmed", async () => {
+  const chrome = await createChromeHarness({
+    draftResponses: [
+      { ok: false, status: 413, json: async () => ({}) },
+      // Rejects only when the save awaits it, like a fetch that fails offline.
+      { then: (_resolve, reject) => reject(new Error("offline")) },
+      { ok: true, json: async () => ({}) },
+    ],
+  });
+  const banner = chrome.element("draftSaveBanner");
+  chrome.sendFrameMessage({ type: "lavish:queuePrompt", prompt: { prompt: "One", selector: "h1", tag: "h1" } });
+  for (let i = 0; i < 4; i += 1) await flushPromises();
+  assert.equal(banner.hidden, false, "a 413 leaves the newest notes only in this tab");
+
+  chrome.sendFrameMessage({ type: "lavish:queuePrompt", prompt: { prompt: "Two", selector: "p", tag: "p" } });
+  for (let i = 0; i < 4; i += 1) await flushPromises();
+  assert.equal(banner.hidden, false, "a network failure keeps the note up");
+
+  chrome.sendFrameMessage({ type: "lavish:queuePrompt", prompt: { prompt: "Three", selector: "h2", tag: "h2" } });
+  for (let i = 0; i < 4; i += 1) await flushPromises();
+  assert.equal(chrome.draftRequests.length, 3, "each change retries");
+  assert.equal(banner.hidden, true, "a confirmed save clears it");
 });
