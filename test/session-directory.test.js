@@ -173,5 +173,8 @@ test("reopening without a name keeps the stored name and a new name renames it",
     assert.equal(list.sessions.length, 1);
     assert.equal(list.sessions[0].key, first.body.key);
     assert.equal(list.sessions[0].name, "Plan v2");
+    await open("a.html", { name: "\u0001\u0002" });
+    list = await fetch(`${base}/api/sessions`).then((r) => r.json());
+    assert.equal(list.sessions[0].name, "Plan v2");
   });
 });

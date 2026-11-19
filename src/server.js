@@ -851,7 +851,7 @@ export async function serve({
         return;
       }
       const url = shouldDisableLayoutGateOpen(req.body || {}) ? appendNoGateParam(sessionUrl) : sessionUrl;
-      const name = typeof req.body?.name === "string" ? normalizeSessionName(req.body.name) : undefined;
+      const name = (typeof req.body?.name === "string" && normalizeSessionName(req.body.name)) || undefined;
       const session = await store.upsertSession(file, sessionUrl, { name });
       if (existing?.status === "ended") {
         clearFeedbackDelivery(key, activePolls, deliveredFeedback, events);
