@@ -910,8 +910,20 @@ async function refreshSessionsMenu() {
       link.className = "menu-item sessions-item";
       link.setAttribute("role", "menuitem");
       link.addEventListener("click", (event) => {
-        if (!chatInput.value.trim() && !editingDraft.trim() && !chatAttachmentController.hasAny()) return;
-        if (!window.confirm("You have unsent writing in this session. Switch anyway?")) event.preventDefault();
+        if (chatInput.value.trim() || editingDraft.trim() || chatAttachmentController.hasAny()) {
+          if (!window.confirm("You have unsent writing in this session. Switch anyway?")) {
+            event.preventDefault();
+            return;
+          }
+        }
+        // A new tab or window leaves this page, and its whiteboards, untouched.
+        if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+        if (inlineWhiteboardChannels.size === 0 && overlayIndex === null) return;
+        // Whiteboard edits save after a short debounce, so leaving at once could drop them. Hold the
+        // navigation until they flush (bounded), as a chrome reload does.
+        event.preventDefault();
+        const href = link.href;
+        flushWhiteboardsBeforeChromeReload().then(() => location.assign(href));
       });
       link.href = "/session/" + encodeURIComponent(String(entry.key));
       if (entry.key === sessionData.key) link.setAttribute("aria-current", "page");

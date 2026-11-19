@@ -128,6 +128,7 @@ async function createChromeHarness({
   let activeElement = null;
   let nextTimerId = 1;
   let reloadCount = 0;
+  const navigations = [];
   let artifactRevision = 0;
 
   function fakeSetTimeout(fn, ms) {
@@ -413,6 +414,9 @@ async function createChromeHarness({
       reload() {
         reloadCount += 1;
       },
+      assign(url) {
+        navigations.push(String(url));
+      },
     },
     navigator: {
       clipboard: {
@@ -673,6 +677,7 @@ async function createChromeHarness({
     queued() {
       return JSON.parse(storage.get("lavish-axi:queued:abc") || "[]");
     },
+    navigations: () => navigations,
     reloadCount() {
       return reloadCount;
     },
@@ -9519,6 +9524,60 @@ test("a session switcher link asks before dropping an image-only draft", async (
   sessionLinks(chrome)[0].dispatch("click", event);
   assert.equal(chrome.confirmPrompts.length, 1);
   assert.equal(event.defaultPrevented, true);
+});
+
+test("a session switcher link waits for inline whiteboards to flush before navigating", async () => {
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url) =>
+      String(url) === "/api/sessions"
+        ? { ok: true, json: async () => ({ sessions: [{ key: "other", name: "p/o.html", file: "~/p/o.html" }] }) }
+        : whiteboardFetch(url),
+  });
+  const inline = await initializeInlineWhiteboard(chrome);
+  chrome.element("sessionsButton").click();
+  await flushPromises();
+  const event = {
+    defaultPrevented: false,
+    preventDefault() {
+      this.defaultPrevented = true;
+    },
+  };
+  sessionLinks(chrome)[0].dispatch("click", event);
+  assert.equal(event.defaultPrevented, true);
+  const flush = inline.posted.at(-1);
+  assert.equal(flush.type, "lavish-whiteboard:flush");
+  assert.deepEqual(chrome.navigations(), []);
+
+  chrome.sendInlineWhiteboardMessage(inline, {
+    type: "lavish-whiteboard:flushComplete",
+    diagramIndex: 0,
+    channelId: "inline-channel",
+    flushId: flush.flushId,
+    ok: true,
+  });
+  await flushPromises();
+  assert.deepEqual(chrome.navigations(), ["/session/other"]);
+});
+
+test("a session switcher link opened in a new tab does not wait on whiteboards", async () => {
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url) =>
+      String(url) === "/api/sessions"
+        ? { ok: true, json: async () => ({ sessions: [{ key: "other", name: "p/o.html", file: "~/p/o.html" }] }) }
+        : whiteboardFetch(url),
+  });
+  await initializeInlineWhiteboard(chrome);
+  chrome.element("sessionsButton").click();
+  await flushPromises();
+  const event = {
+    metaKey: true,
+    defaultPrevented: false,
+    preventDefault() {
+      this.defaultPrevented = true;
+    },
+  };
+  sessionLinks(chrome)[0].dispatch("click", event);
+  assert.equal(event.defaultPrevented, false);
 });
 
 test("a session switcher link never prompts when nothing is unsent", async () => {
