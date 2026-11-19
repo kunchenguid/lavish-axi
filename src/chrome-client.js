@@ -924,7 +924,7 @@ async function refreshSessionsMenu() {
       link.append(name, file);
       sessionsList.append(link);
     }
-    if (!sessions.length) message("No other open sessions.");
+    if (!sessions.length) message("No open sessions to show.");
   } catch {
     if (requestId === sessionsRequestId) message("Could not load sessions.");
   }
