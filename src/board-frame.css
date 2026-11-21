@@ -3,6 +3,7 @@
    ink and the amber of a card whose code changed. */
 
 body[data-hilight-board] {
+  color-scheme: light;
   --bd-table: #efeeea;
   --bd-dots: rgba(28, 28, 26, 0.09);
   --bd-card: #ffffff;
@@ -27,6 +28,7 @@ body[data-hilight-board] {
 }
 
 body[data-hilight-board][data-lavish-whiteboard-theme="dark"] {
+  color-scheme: dark;
   --bd-table: #121314;
   --bd-dots: rgba(255, 255, 255, 0.06);
   --bd-card: #1b1c1e;
@@ -398,6 +400,22 @@ body[data-hilight-board][data-lavish-whiteboard-theme="dark"] .bd-src .tn {
   border: 0;
   display: block;
   background: transparent;
+}
+
+.bd-card[data-surface] .bd-head {
+  border-bottom: 1px solid var(--bd-line);
+}
+
+.bd-card[data-surface] .bd-head.is-compact {
+  padding-bottom: 10px;
+}
+
+.bd-card[data-surface="light"] .bd-html {
+  color-scheme: light;
+}
+
+.bd-card[data-surface="dark"] .bd-html {
+  color-scheme: dark;
 }
 
 .bd-sub {

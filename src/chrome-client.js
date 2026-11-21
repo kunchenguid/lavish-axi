@@ -3675,6 +3675,16 @@ function startBoardRefresh() {
   if (boardRefreshTimer) return;
   boardRefreshTimer = window.setInterval(refreshBoard, BOARD_REFRESH_MS);
   window.addEventListener("focus", refreshBoard);
+  if (window.matchMedia) {
+    const query = window.matchMedia("(prefers-color-scheme: dark)");
+    if (typeof query.addEventListener === "function") {
+      query.addEventListener("change", () => {
+        if (inlineWhiteboardChannels.get(BOARD_SCENE_INDEX)?.initialized) {
+          postToInlineWhiteboard(BOARD_SCENE_INDEX, { type: "hilight-board:theme", theme: whiteboardTheme() });
+        }
+      });
+    }
+  }
 }
 
 async function handleWhiteboardReady(index, mode, isCurrent) {

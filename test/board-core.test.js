@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  applyHtmlCardMeasurements,
+  buildHtmlCardSrcdoc,
   cardElementId,
   codeBodyTop,
   codeColumns,
@@ -15,12 +17,15 @@ import {
   createLinkElements,
   diffCodeLines,
   FLOW_COLORS,
+  HTML_CARD_LAYOUT,
+  HTML_CARD_THEMES,
   linkLandings,
   noteRows,
   normalizeBoardCanvasTarget,
   normalizeBoardCardTarget,
   parseEndpoint,
   parseLinkToken,
+  placeLevelCards,
   reconcileLevelElements,
   canScrollBy,
   freshSince,
@@ -579,4 +584,95 @@ test("stackTopFloaters puts a top floater 8px below a bar it would overlap, and 
     stackTopFloaters([toast, { left: 0, right: 2000, top: 0, bottom: 30 }], [toolbar, lower]),
     [98, 150],
   );
+});
+
+test("buildHtmlCardSrcdoc passes theme, preserves author backgrounds and html attrs, and matches plain <section> cards", () => {
+  const model = {
+    head: "<style>body{background:#fff;color:#18181b}</style>",
+    html_attrs: [
+      ["lang", "en"],
+      ["data-theme", "corporate"],
+      ["style", "color:red"],
+    ],
+    body_attrs: [["class", "prose"]],
+    main_attrs: [["data-hilight-board", "Demo"]],
+  };
+  const card = { id: "plain", html: "<p>Hello</p>", attrs: [["id", "plain"]] };
+  const darkDoc = buildHtmlCardSrcdoc(card, model, "http://127.0.0.1:4387/artifact/k/", {
+    theme: "dark",
+    token: "tok-1",
+  });
+  assert.match(darkDoc, /<html lang="en" data-theme="corporate" data-hilight-theme="dark">/);
+  assert.doesNotMatch(darkDoc, /style="color:red"/);
+  assert.match(darkDoc, /<body class="prose">/);
+  assert.match(darkDoc, new RegExp(`--hilight-card-ink:${HTML_CARD_THEMES.dark.ink}`));
+  assert.match(darkDoc, /color-scheme:dark/);
+  // Reset must not strip author backgrounds with background:transparent!important.
+  assert.doesNotMatch(darkDoc, /background:transparent!important/);
+  // Reset matches both plain <section> cards and [data-card] cards.
+  assert.match(darkDoc, /\[data-hilight-board\]>section,\[data-hilight-board\]>\[data-card\]/);
+  // Escapes </script> safely when embedding card ids.
+  const hostile = buildHtmlCardSrcdoc({ id: "</script><img onerror=1>", html: "" }, model, "http://127.0.0.1/", {
+    theme: "light",
+    token: "tok-2",
+  });
+  assert.doesNotMatch(hostile, /<\/script><img/);
+});
+
+test("applyHtmlCardMeasurements grows auto-sized cards, reflows rows without overlap, and never reports phantom marks", () => {
+  const cards = [
+    { id: "c1", level: "", kind: "html", title: "One", x: 0, y: 0, w: 460, h: 200, placed: false, auto_h: true },
+    { id: "c2", level: "", kind: "html", title: "Two", x: 516, y: 0, w: 460, h: 200, placed: false, auto_h: true },
+    { id: "c3", level: "", kind: "html", title: "Three", x: 1032, y: 0, w: 460, h: 200, placed: false, auto_h: false },
+    { id: "c4", level: "", kind: "html", title: "Four", x: 0, y: 256, w: 460, h: 200, placed: false, auto_h: true },
+  ];
+  placeLevelCards(cards, []);
+  const initial = reconcileLevelElements(cards, [], []);
+  const { elements, changed } = applyHtmlCardMeasurements(
+    cards,
+    initial,
+    [],
+    new Map([
+      ["c1", 520],
+      ["c3", 600], // explicit data-h (auto_h: false) must be ignored
+    ]),
+  );
+  assert.equal(changed, true);
+  const byId = Object.fromEntries(elements.map((el) => [el.id, el]));
+  assert.equal(byId["card:c1"].height, 520);
+  assert.equal(byId["card:c3"].height, 200, "explicit data-h card keeps its authored height");
+  assert.equal(byId["card:c4"].y, 520 + 56, "row 2 reflows cleanly below the grown card");
+  // fileRect is untouched while autoRect records the auto-sized geometry.
+  assert.equal(byId["card:c1"].customData.fileRect.h, 200);
+  assert.equal(byId["card:c1"].customData.autoRect.h, 520);
+  // summarizeBoardMarks must not treat auto-sizing/reflow as reviewer marks.
+  const summary = summarizeBoardMarks({ levels: [{ id: "", title: "" }], cards }, elements);
+  assert.deepEqual(summary.lines, []);
+  assert.equal(summary.stats.moved, 0);
+
+  // Reloading the unchanged board preserves the saved autoRect height.
+  const reloaded = reconcileLevelElements(cards, elements, []);
+  assert.equal(reloaded.find((el) => el.id === "card:c1").height, 520);
+  assert.equal(reloaded.find((el) => el.id === "card:c1").customData.autoRect.h, 520);
+
+  // If the reviewer manually resizes or moves a card, auto-sizing respects it.
+  const manual = elements.map((el) =>
+    el.id === "card:c1" ? { ...el, height: 340 } : el.id === "card:c4" ? { ...el, x: 999, y: 888 } : el,
+  );
+  const afterManual = applyHtmlCardMeasurements(
+    cards,
+    manual,
+    [],
+    new Map([
+      ["c1", 700],
+      ["c2", 420],
+    ]),
+  );
+  const afterById = Object.fromEntries(afterManual.elements.map((el) => [el.id, el]));
+  assert.equal(afterById["card:c1"].height, 340, "reviewer manual resize is preserved");
+  assert.deepEqual([afterById["card:c4"].x, afterById["card:c4"].y], [999, 888], "reviewer manual move is preserved");
+  assert.equal(afterById["card:c2"].height, 420, "untouched card still auto-sizes");
+  // Clamping to HTML_CARD_LAYOUT.maxHeight.
+  const huge = applyHtmlCardMeasurements(cards, initial, [], new Map([["c1", 9999]]));
+  assert.equal(huge.elements.find((el) => el.id === "card:c1").height, HTML_CARD_LAYOUT.maxHeight);
 });

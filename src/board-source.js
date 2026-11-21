@@ -6,6 +6,7 @@ import { parse, serializeOuter } from "parse5";
 
 import {
   CODE_CARD_LAYOUT,
+  HTML_CARD_LAYOUT,
   codeCardWidth,
   codeColumns,
   codeNoteHeight,
@@ -13,6 +14,7 @@ import {
   flowColor,
   parseEndpoint,
   parseLinkToken,
+  placeLevelCards,
 } from "./board-core.js";
 
 // Server-side reading of a board artifact: one HTML file whose
@@ -31,16 +33,11 @@ export const MAX_CODE_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_CARD_HTML_CHARS = 200_000;
 const MAX_NOTE_CHARS = 600;
 const MAX_TITLE_CHARS = 160;
-const GRID_GAP = 56;
-const GRID_COLUMNS = 3;
-// Room between flow columns and rows, for arrows routed around the cards.
-const FLOW_COLUMN_GAP = 160;
-const FLOW_ROW_GAP = 96;
 const MAX_FLOWS = 12;
 const MAX_FLOW_STEPS = 60;
 
 const DEFAULT_SIZE = {
-  html: { w: 460, h: 260 },
+  html: { w: HTML_CARD_LAYOUT.defaultWidth, h: HTML_CARD_LAYOUT.defaultHeight },
   code: { w: 560, h: 200 },
   board: { w: 380, h: 240 },
 };
@@ -261,16 +258,30 @@ function ownContent(node, skip) {
   );
 }
 
-// How much text an HTML card holds, to size it when the file gives no height.
+// How much content an HTML card holds, for an initial height estimate before
+// the browser measures its real rendered height.
 function textSize(node, skip) {
   let blocks = 0;
+  let preLines = 0;
+  let media = 0;
   const count = (child) => {
-    if (/^(p|li|tr|h[1-6]|pre|blockquote|dt|dd)$/.test(child.tagName || "")) blocks += 1;
+    const tag = child.tagName || "";
+    if (/^(p|li|tr|h[1-6]|blockquote|dt|dd|hr|details|form)$/.test(tag)) blocks += 1;
+    else if (tag === "div" && elementChildren(child).length === 0 && textOf(child).trim()) blocks += 1;
+    if (tag === "pre") {
+      blocks += 1;
+      preLines += splitLines(textOf(child)).length;
+      return;
+    }
+    if (/^(svg|img|canvas|video)$/.test(tag)) {
+      media += 1;
+      return;
+    }
     elementChildren(child).forEach(count);
   };
   const own = ownContent(node, skip).filter((child) => child.tagName);
   own.forEach(count);
-  return { chars: squash(own.map(textOf).join(" "), 20_000).length, blocks };
+  return { chars: squash(own.map(textOf).join(" "), 20_000).length, blocks, preLines, media };
 }
 
 function noteText(node, skip) {
@@ -297,6 +308,15 @@ function snapshotLines(node) {
   let text = textOf(pre);
   if (text.startsWith("\n")) text = text.slice(1);
   return splitLines(text.replace(/\n$/, ""));
+}
+
+function documentAttrs(document) {
+  const html = elementChildren(document).find((node) => node.tagName === "html");
+  const body = elementChildren(html).find((node) => node.tagName === "body");
+  return {
+    html_attrs: html ? wrapperAttrs(html) : [],
+    body_attrs: body ? wrapperAttrs(body) : [],
+  };
 }
 
 function headHtml(document) {
@@ -362,6 +382,7 @@ export function parseBoardHtml(html) {
       usedIds.add(id);
       const kind = cardKind(node);
       const { title, heading } = cardTitle(node);
+      const explicitH = finiteAttr(node, "data-h");
       /** @type {any} */
       const card = {
         id,
@@ -371,9 +392,10 @@ export function parseBoardHtml(html) {
         x: finiteAttr(node, "data-x"),
         y: finiteAttr(node, "data-y"),
         w: finiteAttr(node, "data-w"),
-        h: finiteAttr(node, "data-h"),
+        h: explicitH,
         has_id: Boolean(attr(node, "id")),
         placed: finiteAttr(node, "data-x") !== null && finiteAttr(node, "data-y") !== null,
+        ...(kind === "html" ? { auto_h: explicitH === null } : {}),
         to: String(attr(node, "data-to") || "")
           .split(/\s+/)
           .filter(Boolean)
@@ -432,9 +454,12 @@ export function parseBoardHtml(html) {
       });
     }
   }
+  const { html_attrs, body_attrs } = documentAttrs(document);
   const board = {
     title: rootTitle,
     head: headHtml(document),
+    html_attrs,
+    body_attrs,
     main_attrs: wrapperAttrs(root),
     levels,
     cards,
@@ -499,13 +524,17 @@ function sizeCodeCard(card) {
   card.h = codeCardHeight(card);
 }
 
-// A text card's height when the file gives none: its text wrapped at the
-// card's width, plus a little per paragraph, list item, or table row.
+// An HTML card's initial height when the file gives none: wrapped text,
+// block spacing, preformatted lines, and embedded visuals. The browser refines
+// this to the real rendered content height once the card iframe paints.
 function htmlCardHeight(card) {
-  const size = card.text_size || { chars: 0, blocks: 0 };
+  const size = card.text_size || { chars: 0, blocks: 0, preLines: 0, media: 0 };
   const perRow = Math.max(20, Math.floor((card.w - 36) / 7.4));
-  const rows = Math.ceil(size.chars / perRow) + size.blocks * 0.6;
-  return Math.round(Math.min(Math.max(64 + rows * 22, 140), 640));
+  const rows = Math.ceil(size.chars / perRow) + (size.blocks || 0) * 0.8 + (size.preLines || 0) * 0.9;
+  const mediaPx = (size.media || 0) * 180;
+  return Math.round(
+    Math.min(Math.max(HTML_CARD_LAYOUT.headerHeight + 36 + rows * 23 + mediaPx, 140), HTML_CARD_LAYOUT.maxHeight),
+  );
 }
 
 /**
@@ -525,103 +554,10 @@ export function layoutLevel(cards, flows = []) {
     if (card.w === null || card.w <= 0) card.w = DEFAULT_SIZE[card.kind].w;
     if (card.h === null || card.h <= 0)
       card.h = card.kind === "html" ? htmlCardHeight(card) : DEFAULT_SIZE[card.kind].h;
-    card.w = Math.min(Math.max(card.w, 160), 2400);
-    card.h = Math.min(Math.max(card.h, 100), 2400);
+    card.w = Math.min(Math.max(card.w, HTML_CARD_LAYOUT.minWidth), HTML_CARD_LAYOUT.maxWidth);
+    card.h = Math.min(Math.max(card.h, HTML_CARD_LAYOUT.minHeight), 2400);
   }
-  const placed = cards.filter((card) => card.placed);
-  const floating = cards.filter((card) => !card.placed);
-  let originY = placed.length ? Math.max(...placed.map((card) => card.y + card.h)) + GRID_GAP * 2 : 0;
-  const originX = placed.length ? Math.min(...placed.map((card) => card.x)) : 0;
-  const byId = new Map(floating.map((card) => [card.id, card]));
-  // Each flow gets its own horizontal band, in the order the flows are
-  // written; a card shared by two flows sits in the first flow's band.
-  const bands = [];
-  const bandOf = new Map();
-  const edges = [];
-  for (const flow of flows) {
-    const band = [];
-    for (const step of flow.steps) {
-      const from = step.from.card;
-      const to = step.to.card;
-      if (from === to || !byId.has(from) || !byId.has(to)) continue;
-      edges.push([from, to]);
-      for (const id of [from, to]) {
-        if (bandOf.has(id)) continue;
-        bandOf.set(id, bands.length);
-        band.push(id);
-      }
-    }
-    if (band.length) bands.push(band);
-  }
-  const order = bands.flat();
-  const others = floating.filter((card) => !bandOf.has(card.id));
-  // Three columns reads well for a handful of cards; past nine the grid grows with the square
-  // root, so a large board stays roughly square and Fit can still show all of it.
-  const columns = Math.max(GRID_COLUMNS, Math.ceil(Math.sqrt(others.length)));
-  for (let index = 0; index < others.length; index += columns) {
-    const row = others.slice(index, index + columns);
-    let x = originX;
-    for (const card of row) {
-      card.x = x;
-      card.y = originY;
-      x += card.w + GRID_GAP;
-    }
-    originY += Math.max(...row.map((card) => card.h)) + (order.length ? FLOW_ROW_GAP * 1.5 : GRID_GAP);
-  }
-  if (!order.length) return;
-  // Longest-path columns over the flow graph without its back edges, so a
-  // flow that loops back (a retry) still reads left to right. Columns are
-  // shared by every band, so a step's column means the same thing in each.
-  const next = new Map(order.map((id) => [id, []]));
-  for (const [from, to] of edges) next.get(from).push(to);
-  const forward = [];
-  const state = new Map();
-  const visit = (id) => {
-    state.set(id, 1);
-    for (const to of next.get(id)) {
-      if (state.get(to) === 1) continue;
-      forward.push([id, to]);
-      if (!state.has(to)) visit(to);
-    }
-    state.set(id, 2);
-  };
-  for (const id of order) if (!state.has(id)) visit(id);
-  const rank = new Map(order.map((id) => [id, 0]));
-  for (let pass = 0; pass < order.length; pass += 1) {
-    let changed = false;
-    for (const [from, to] of forward) {
-      if (rank.get(to) < rank.get(from) + 1) {
-        rank.set(to, rank.get(from) + 1);
-        changed = true;
-      }
-    }
-    if (!changed) break;
-  }
-  const columnWidth = [];
-  for (const id of order) {
-    const column = rank.get(id);
-    columnWidth[column] = Math.max(columnWidth[column] || 0, byId.get(id).w);
-  }
-  const columnX = [];
-  let x = originX;
-  for (let column = 0; column < columnWidth.length; column += 1) {
-    columnX[column] = x;
-    if (columnWidth[column]) x += columnWidth[column] + FLOW_COLUMN_GAP;
-  }
-  let y = originY;
-  for (const band of bands) {
-    const columnY = new Map();
-    let bottom = y;
-    for (const id of band) {
-      const card = byId.get(id);
-      const column = rank.get(id);
-      card.x = columnX[column];
-      card.y = columnY.get(column) ?? y;
-      columnY.set(column, card.y + card.h + FLOW_ROW_GAP);
-      bottom = Math.max(bottom, card.y + card.h);
-    }
-    y = bottom + FLOW_ROW_GAP * 1.5;
-  }
+  placeLevelCards(cards, flows);
 }
 
 function previewRects(children) {

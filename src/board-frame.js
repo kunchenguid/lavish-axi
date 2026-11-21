@@ -34,7 +34,10 @@ import "./board-frame.css";
 import {
   CARD_LINK_PREFIX,
   CODE_CARD_LAYOUT,
+  HTML_CARD_LAYOUT,
   NOTE_LAYOUT,
+  applyHtmlCardMeasurements,
+  buildHtmlCardSrcdoc,
   cardGeometryKey,
   codeNoteHeight,
   codeRows,
@@ -127,26 +130,9 @@ function tokenize(line, lang) {
   return parts;
 }
 
-function attrString(attrs) {
-  return (Array.isArray(attrs) ? attrs : [])
-    .filter((pair) => Array.isArray(pair) && /^[a-zA-Z_:][-a-zA-Z0-9_:.]*$/.test(String(pair[0])))
-    .map(([name, value]) => ` ${name}="${String(value).replace(/&/g, "&amp;").replace(/"/g, "&quot;")}"`)
-    .join("");
-}
-
-// HTML cards render in their own sandboxed document (scripts allowed, opaque
-// origin, no access to this frame). The board's <head> loads there too and the
-// card sits inside copies of its board and card wrappers, so the author's CSS
-// applies on the canvas the same way it does on the plain page.
-const CARD_RESET = `html,body{margin:0!important;padding:0!important;background:transparent!important;max-width:none!important;width:auto!important;min-height:0!important}
-[data-hilight-board]{display:block!important;margin:0!important;padding:0!important;max-width:none!important;width:auto!important;min-height:0!important;background:transparent!important;border:0!important;box-shadow:none!important}
-[data-hilight-board]>[data-card]{display:block!important;margin:0!important;border:0!important;border-radius:0!important;box-shadow:none!important;background:transparent!important;padding:2px 16px 16px!important;width:auto!important;height:auto!important;max-width:none!important;min-height:0!important;overflow:visible!important}
-[data-hilight-board]>[data-card]>:first-child{margin-top:0!important}`;
-
-function cardSrcdoc(card, model, base) {
-  return `<!doctype html><html><head><meta charset="utf-8"><base href="${base}" target="_blank"><style>body{font:14px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;color:#1c1c1a}</style>
-${model.head || ""}
-<style>${CARD_RESET}</style></head><body><main${attrString(model.main_attrs)}><section${attrString(card.attrs)}>${card.html || ""}</section></main></body></html>`;
+function mintCardToken() {
+  if (typeof window.crypto?.randomUUID === "function") return window.crypto.randomUUID();
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
 /**
@@ -171,7 +157,7 @@ export function startBoard(init, { post }) {
     lastGeometry: "",
     selectedCard: "",
     threadCounts: /** @type {Record<string, number>} */ ({}),
-    theme: init.theme === "dark" ? "dark" : "light",
+    theme: /** @type {"light" | "dark"} */ (init.theme === "dark" ? "dark" : "light"),
     base: `${location.origin}/artifact/${encodeURIComponent(new URL(location.href).searchParams.get("key") || "")}/`,
     switching: false,
     linkStripPending: false,
@@ -197,6 +183,12 @@ export function startBoard(init, { post }) {
     wheelPending: /** @type {null | { dx: number, dy: number, factor: number, point: { x: number, y: number } }} */ (
       null
     ),
+    cardToken: mintCardToken(),
+    cardFrames: /** @type {Map<string, any>} */ (new Map()),
+    cardSurfaces: /** @type {Map<string, "inherit" | "light" | "dark">} */ (new Map()),
+    measuredHeights: /** @type {Map<string, number>} */ (new Map()),
+    growGuard: /** @type {Map<string, { count: number, lastHeight: number, at: number }>} */ (new Map()),
+    autoLayoutFrame: 0,
   };
   const listeners = new Set();
   let version = 0;
@@ -209,7 +201,6 @@ export function startBoard(init, { post }) {
     return () => listeners.delete(listener);
   };
   const getVersion = () => version;
-  const srcdocCache = new Map();
 
   function indexModel(model) {
     s.model = model;
@@ -460,14 +451,28 @@ export function startBoard(init, { post }) {
   }
 
   function HtmlBody({ card }) {
-    const key = `${s.model.revision}:${card.id}`;
-    if (!srcdocCache.has(key)) srcdocCache.set(key, cardSrcdoc(card, s.model, s.base));
+    const srcDoc = React.useMemo(
+      () => buildHtmlCardSrcdoc(card, s.model, s.base, { theme: s.theme, token: s.cardToken }),
+      [s.model.revision, card.id],
+    );
+    const bindFrame = React.useCallback(
+      (node) => {
+        if (node) s.cardFrames.set(card.id, node);
+        else s.cardFrames.delete(card.id);
+      },
+      [card.id],
+    );
     return h("iframe", {
+      ref: bindFrame,
       className: "bd-html",
       title: card.title || card.id,
       sandbox: "allow-scripts allow-popups",
-      srcDoc: srcdocCache.get(key),
+      srcDoc,
       scrolling: "auto",
+      onLoad: () => {
+        const frame = s.cardFrames.get(card.id);
+        frame?.contentWindow?.postMessage({ type: "hilight-board:cardTheme", token: s.cardToken, theme: s.theme }, "*");
+      },
     });
   }
 
@@ -476,6 +481,7 @@ export function startBoard(init, { post }) {
     const card = s.cardsById.get(id);
     if (!card) return h("div", { className: "bd-card is-gone" }, "This card is no longer in the board file.");
     const code = card.kind === "code" ? card.code : null;
+    const surface = card.kind === "html" ? s.cardSurfaces.get(id) || "inherit" : undefined;
     const meta =
       card.kind === "code" && code
         ? h(
@@ -510,6 +516,7 @@ export function startBoard(init, { post }) {
           (s.fresh.cards.has(id) ? " is-new" : "") +
           (s.selectedCard === id ? " is-selected" : ""),
         "data-card": id,
+        ...(surface && surface !== "inherit" && surface !== s.theme ? { "data-surface": surface } : {}),
       },
       h(
         "div",
@@ -924,6 +931,7 @@ export function startBoard(init, { post }) {
     editor.classList.remove("is-switching");
     s.switching = false;
     s.lastGeometry = "";
+    if (s.measuredHeights.size) scheduleAutoLayout();
     scheduleGeometry();
     scheduleSave();
   }
@@ -1554,10 +1562,107 @@ export function startBoard(init, { post }) {
   }
 
   // ---------------------------------------------------------------------------
+  // HTML card auto-sizing & contrast surface reporting: each sandboxed card
+  // iframe measures its rendered content height and posts it here (never to the
+  // chrome). Verified against the iframe's own contentWindow and our per-board
+  // token so no untrusted card can resize another card.
+
+  function applyAutoLayout() {
+    s.autoLayoutFrame = 0;
+    if (!s.api || s.switching || !s.measuredHeights.size) return;
+    const elements = s.api.getSceneElementsIncludingDeleted();
+    const levelCards = s.model.cards.filter((card) => card.level === s.level);
+    const { elements: nextElements, changed } = applyHtmlCardMeasurements(
+      levelCards,
+      elements,
+      s.model.flows,
+      s.measuredHeights,
+    );
+    if (!changed) return;
+    const wasAuto = onAutoView();
+    const autoKind = s.autoView?.kind;
+    s.api.updateScene({
+      elements: nextElements,
+      captureUpdate: CaptureUpdateAction.NEVER,
+    });
+    s.linkKey = "";
+    syncLinks();
+    if (wasAuto && autoKind === "opening") openingView();
+    else if (wasAuto && autoKind === "fit") fitAll();
+    scheduleGeometry();
+    scheduleSave();
+  }
+
+  function scheduleAutoLayout() {
+    if (s.autoLayoutFrame || !s.api || s.switching) return;
+    s.autoLayoutFrame = window.requestAnimationFrame(applyAutoLayout);
+    afterThisTask(() => {
+      if (!s.autoLayoutFrame) return;
+      window.cancelAnimationFrame(s.autoLayoutFrame);
+      applyAutoLayout();
+    });
+  }
+
+  function setBoardTheme(nextTheme) {
+    const normalized = nextTheme === "dark" ? "dark" : "light";
+    if (normalized === s.theme) return;
+    s.theme = normalized;
+    document.body.dataset.lavishWhiteboardTheme = normalized;
+    for (const frame of s.cardFrames.values()) {
+      frame?.contentWindow?.postMessage(
+        { type: "hilight-board:cardTheme", token: s.cardToken, theme: normalized },
+        "*",
+      );
+    }
+    notifyCards();
+  }
+
+  window.addEventListener("message", (event) => {
+    const msg = event.data;
+    if (!msg || typeof msg !== "object" || msg.type !== "hilight-board:cardMetrics") return;
+    if (msg.token !== s.cardToken) return;
+    const cardId = typeof msg.cardId === "string" ? msg.cardId : "";
+    if (!cardId) return;
+    const frame = s.cardFrames.get(cardId);
+    if (!frame || frame.contentWindow !== event.source) return;
+    const card = s.cardsById.get(cardId);
+    if (!card || card.kind !== "html") return;
+    const surface = msg.surface === "light" || msg.surface === "dark" ? msg.surface : "inherit";
+    if (s.cardSurfaces.get(cardId) !== surface) {
+      s.cardSurfaces.set(cardId, surface);
+      notifyCards();
+    }
+    if (card.auto_h !== true) return;
+    const contentHeight = Number(msg.height);
+    if (!Number.isFinite(contentHeight) || contentHeight <= 0) return;
+    const head = editor.querySelector(`.bd-card[data-card="${CSS.escape(cardId)}"] .bd-head`);
+    const headHeight =
+      head instanceof HTMLElement && head.offsetHeight > 0
+        ? Math.ceil(head.offsetHeight)
+        : HTML_CARD_LAYOUT.headerHeight;
+    const totalHeight = Math.min(
+      Math.max(Math.ceil(headHeight + HTML_CARD_LAYOUT.borderHeight + contentHeight), HTML_CARD_LAYOUT.minHeight),
+      HTML_CARD_LAYOUT.maxHeight,
+    );
+    const now = Date.now();
+    const guard = s.growGuard.get(cardId);
+    if (guard && totalHeight > guard.lastHeight && now - guard.at < 1500) {
+      if (guard.count >= 4) return;
+      s.growGuard.set(cardId, { count: guard.count + 1, lastHeight: totalHeight, at: now });
+    } else if (!guard || totalHeight !== guard.lastHeight) {
+      s.growGuard.set(cardId, { count: 1, lastHeight: totalHeight, at: now });
+    }
+    if (s.measuredHeights.get(cardId) === totalHeight) return;
+    s.measuredHeights.set(cardId, totalHeight);
+    scheduleAutoLayout();
+  });
+
+  // ---------------------------------------------------------------------------
   // Mount
 
   const view = savedViewFor(s.level);
   function BoardApp() {
+    const theme = React.useSyncExternalStore(subscribe, () => s.theme);
     return h(Excalidraw, {
       initialData: {
         elements: restored(s.elementsByLevel.get(s.level) || []),
@@ -1571,7 +1676,7 @@ export function startBoard(init, { post }) {
         files: s.files,
         scrollToContent: !view,
       },
-      theme: s.theme,
+      theme,
       onChange,
       onScrollChange: (_x, _y, zoom) => {
         renderZoom(zoom?.value);
@@ -1596,6 +1701,7 @@ export function startBoard(init, { post }) {
             scheduleGeometry();
           });
         }
+        if (s.measuredHeights.size) scheduleAutoLayout();
         window.setTimeout(() => {
           syncLinks();
           scheduleGeometry();
@@ -1683,6 +1789,7 @@ export function startBoard(init, { post }) {
       if (s.levelsById.has(level) && level !== s.level) void openLevel(level);
     }
     if (message.type === "hilight-board:revealCard") revealCard(String(message.card || ""));
+    if (message.type === "hilight-board:theme") setBoardTheme(message.theme);
     // The chrome re-reads the board (code ranges included) while it is open, so
     // a card flips to stale when its file changes on disk.
     if (message.type === "hilight-board:update" && message.board && message.board.revision === s.model.revision) {

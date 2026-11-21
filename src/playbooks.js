@@ -404,7 +404,7 @@ export const PLAYBOOKS = [
       "Text: the <p> directly inside <main> is the board summary, shown above the canvas; the <p> in a card is its overview.",
     ],
     hilight_does:
-      "Hilight places the cards (text cards on top, flow cards left to right in step order), routes every step from its source lines to its target lines around the other cards and highlights both ends, gives each flow its own colour and a legend, sizes code cards to their lines, and opens at a readable zoom. Do not write coordinates, sizes, arrows, colours, or CSS for the canvas.",
+      "Hilight places the cards (text cards on top, flow cards left to right in step order), routes every step from its source lines to its target lines around the other cards and highlights both ends, gives each flow its own colour and a legend, sizes code cards to their lines and HTML/text cards to their rendered content, adapts plain HTML cards to the canvas light or dark theme automatically, and opens at a readable zoom. Do not write coordinates, sizes, arrows, colours, or CSS for the canvas.",
     flows: [
       "Group steps into flows by the job they do together: one flow per path a request, event, or piece of data takes (Pay, Retry, Refund). Two to four flows per board; a board with one path has one flow.",
       "List steps in the order they happen, and point each end at the exact lines responsible: the line that calls, and the line that receives.",
@@ -423,7 +423,7 @@ export const PLAYBOOKS = [
     pitfalls: [
       "Do not paste code into a text card when it lives in the repository; use a code card.",
       "Do not split one board across files; nest boards in the one file.",
-      "Optional, only when the user asks: data-x, data-y, data-w on a card place it yourself; data-to on a card is the older connector form.",
+      "Optional, only when the user asks: data-x, data-y, data-w, data-h on a card place or size it yourself (leaving data-h off lets Hilight auto-size HTML cards to their content); data-to on a card is the older connector form.",
     ],
     lavish_notes: [
       'Reviewer marks arrive as a tag "board" prompt that names cards by id and code by line; comments on a card arrive as ordinary threads whose target names the card and, for code cards, its range and pin status.',

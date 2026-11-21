@@ -360,3 +360,28 @@ test("loose cards stay three to a row for small boards and grow with the square 
   layoutLevel(large);
   assert.equal(rowsOf(large), 12, "144 loose cards make a 12 by 12 grid, not 48 rows of three");
 });
+
+test("parseBoardHtml marks HTML cards auto_h only when data-h is absent and preserves html/body attrs", () => {
+  const model = parseBoardHtml(`<!doctype html>
+<html lang="en" data-theme="luxury">
+  <head><title>Board</title></head>
+  <body class="app-body">
+    <main data-hilight-board="Board">
+      <section id="auto"><h2>Auto</h2><p>No explicit height.</p><pre>a\nb\nc\nd\ne\nf\ng\nh</pre></section>
+      <section id="fixed" data-h="310"><h2>Fixed</h2><p>Explicit height.</p></section>
+    </main>
+  </body>
+</html>`);
+  assert.ok(model);
+  assert.deepEqual(model.html_attrs, [
+    ["lang", "en"],
+    ["data-theme", "luxury"],
+  ]);
+  assert.deepEqual(model.body_attrs, [["class", "app-body"]]);
+  const byId = Object.fromEntries(model.cards.map((card) => [card.id, card]));
+  assert.equal(byId.auto.auto_h, true);
+  assert.equal(byId.fixed.auto_h, false);
+  assert.equal(byId.fixed.h, 310);
+  // Preformatted multiline blocks increase the initial height estimate.
+  assert.ok(byId.auto.h > 260, `expected multiline <pre> card estimate > 260, got ${byId.auto.h}`);
+});

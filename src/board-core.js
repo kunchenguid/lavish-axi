@@ -15,6 +15,388 @@ export const CARD_ELEMENT_PREFIX = "card:";
 export const LINK_ELEMENT_PREFIX = "link:";
 export const CARD_LINK_PREFIX = "https://hilight.invalid/card/";
 
+export const BOARD_LAYOUT = Object.freeze({
+  gridGap: 56,
+  gridColumns: 3,
+  flowColumnGap: 160,
+  flowRowGap: 96,
+});
+
+export const HTML_CARD_LAYOUT = Object.freeze({
+  defaultWidth: 460,
+  defaultHeight: 260,
+  minWidth: 160,
+  maxWidth: 2400,
+  minHeight: 100,
+  maxHeight: 1200,
+  headerHeight: 36,
+  borderHeight: 2,
+});
+
+export const HTML_CARD_THEMES = Object.freeze({
+  light: Object.freeze({
+    bg: "#ffffff",
+    rgb: Object.freeze([255, 255, 255]),
+    ink: "#1c1c1a",
+    muted: "#6f6e69",
+    line: "#dddcd6",
+    accent: "#1f6fe0",
+    surface: "#f5f4f0",
+  }),
+  dark: Object.freeze({
+    bg: "#1b1c1e",
+    rgb: Object.freeze([27, 28, 30]),
+    ink: "#ecebe6",
+    muted: "#a3a29c",
+    line: "#2c2d30",
+    accent: "#6aa8ff",
+    surface: "#252629",
+  }),
+});
+
+/**
+ * Place the unplaced cards of one level given their current `w` and `h`. Cards
+ * in a flow are laid out left to right by longest-path columns (back edges
+ * dropped so retries still read left to right); every other card goes in a row
+ * above. Cards with `placed: true` keep their coordinates and floating cards
+ * sit below them.
+ * @param {any[]} cards
+ * @param {any[]} [flows]
+ */
+export function placeLevelCards(cards, flows = []) {
+  const placed = cards.filter((card) => card.placed);
+  const floating = cards.filter((card) => !card.placed);
+  let originY = placed.length ? Math.max(...placed.map((card) => card.y + card.h)) + BOARD_LAYOUT.gridGap * 2 : 0;
+  const originX = placed.length ? Math.min(...placed.map((card) => card.x)) : 0;
+  const byId = new Map(floating.map((card) => [card.id, card]));
+  // Each flow gets its own horizontal band, in the order the flows are
+  // written; a card shared by two flows sits in the first flow's band.
+  const bands = [];
+  const bandOf = new Map();
+  const edges = [];
+  for (const flow of flows) {
+    const band = [];
+    for (const step of flow.steps || []) {
+      const from = step.from?.card;
+      const to = step.to?.card;
+      if (!from || !to || from === to || !byId.has(from) || !byId.has(to)) continue;
+      edges.push([from, to]);
+      for (const id of [from, to]) {
+        if (bandOf.has(id)) continue;
+        bandOf.set(id, bands.length);
+        band.push(id);
+      }
+    }
+    if (band.length) bands.push(band);
+  }
+  const order = bands.flat();
+  const others = floating.filter((card) => !bandOf.has(card.id));
+  // Three columns reads well for a handful of cards; past nine the grid grows with the square
+  // root, so a large board stays roughly square and Fit can still show all of it.
+  const columns = Math.max(BOARD_LAYOUT.gridColumns, Math.ceil(Math.sqrt(others.length)));
+  for (let index = 0; index < others.length; index += columns) {
+    const row = others.slice(index, index + columns);
+    let x = originX;
+    for (const card of row) {
+      card.x = x;
+      card.y = originY;
+      x += card.w + BOARD_LAYOUT.gridGap;
+    }
+    originY +=
+      Math.max(...row.map((card) => card.h)) + (order.length ? BOARD_LAYOUT.flowRowGap * 1.5 : BOARD_LAYOUT.gridGap);
+  }
+  if (!order.length) return;
+  // Longest-path columns over the flow graph without its back edges, so a
+  // flow that loops back (a retry) still reads left to right. Columns are
+  // shared by every band, so a step's column means the same thing in each.
+  const next = new Map(order.map((id) => [id, []]));
+  for (const [from, to] of edges) next.get(from).push(to);
+  const forward = [];
+  const state = new Map();
+  const visit = (id) => {
+    state.set(id, 1);
+    for (const to of next.get(id)) {
+      if (state.get(to) === 1) continue;
+      forward.push([id, to]);
+      if (!state.has(to)) visit(to);
+    }
+    state.set(id, 2);
+  };
+  for (const id of order) if (!state.has(id)) visit(id);
+  const rank = new Map(order.map((id) => [id, 0]));
+  for (let pass = 0; pass < order.length; pass += 1) {
+    let changed = false;
+    for (const [from, to] of forward) {
+      if (rank.get(to) < rank.get(from) + 1) {
+        rank.set(to, rank.get(from) + 1);
+        changed = true;
+      }
+    }
+    if (!changed) break;
+  }
+  const columnWidth = [];
+  for (const id of order) {
+    const column = rank.get(id);
+    columnWidth[column] = Math.max(columnWidth[column] || 0, byId.get(id).w);
+  }
+  const columnX = [];
+  let x = originX;
+  for (let column = 0; column < columnWidth.length; column += 1) {
+    columnX[column] = x;
+    if (columnWidth[column]) x += columnWidth[column] + BOARD_LAYOUT.flowColumnGap;
+  }
+  let y = originY;
+  for (const band of bands) {
+    const columnY = new Map();
+    let bottom = y;
+    for (const id of band) {
+      const card = byId.get(id);
+      const column = rank.get(id);
+      card.x = columnX[column];
+      card.y = columnY.get(column) ?? y;
+      columnY.set(column, card.y + card.h + BOARD_LAYOUT.flowRowGap);
+      bottom = Math.max(bottom, card.y + card.h);
+    }
+    y = bottom + BOARD_LAYOUT.flowRowGap * 1.5;
+  }
+}
+
+function escapeAttrValue(value) {
+  return String(value).replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+}
+
+function cardAttrString(attrs, skipNames = null) {
+  return (Array.isArray(attrs) ? attrs : [])
+    .filter(
+      (pair) =>
+        Array.isArray(pair) &&
+        /^[a-zA-Z_:][-a-zA-Z0-9_:.]*$/.test(String(pair[0])) &&
+        (!skipNames || !skipNames.has(String(pair[0]).toLowerCase())),
+    )
+    .map(([name, value]) => ` ${name}="${escapeAttrValue(value)}"`)
+    .join("");
+}
+
+function inlineJson(value) {
+  return JSON.stringify(value).replace(/</g, "\\u003c");
+}
+
+const CARD_BASE_STYLE = `:root,:root[data-hilight-theme="light"]{color-scheme:light;--hilight-card-bg:${HTML_CARD_THEMES.light.bg};--hilight-card-ink:${HTML_CARD_THEMES.light.ink};--hilight-card-muted:${HTML_CARD_THEMES.light.muted};--hilight-card-line:${HTML_CARD_THEMES.light.line};--hilight-card-accent:${HTML_CARD_THEMES.light.accent};--hilight-card-surface:${HTML_CARD_THEMES.light.surface}}
+:root[data-hilight-theme="dark"]{color-scheme:dark;--hilight-card-bg:${HTML_CARD_THEMES.dark.bg};--hilight-card-ink:${HTML_CARD_THEMES.dark.ink};--hilight-card-muted:${HTML_CARD_THEMES.dark.muted};--hilight-card-line:${HTML_CARD_THEMES.dark.line};--hilight-card-accent:${HTML_CARD_THEMES.dark.accent};--hilight-card-surface:${HTML_CARD_THEMES.dark.surface}}
+:root[data-hilight-palette="light"]{color-scheme:light;--hilight-card-bg:${HTML_CARD_THEMES.light.bg};--hilight-card-ink:${HTML_CARD_THEMES.light.ink};--hilight-card-muted:${HTML_CARD_THEMES.light.muted};--hilight-card-line:${HTML_CARD_THEMES.light.line};--hilight-card-accent:${HTML_CARD_THEMES.light.accent};--hilight-card-surface:${HTML_CARD_THEMES.light.surface}}
+:root[data-hilight-palette="dark"]{color-scheme:dark;--hilight-card-bg:${HTML_CARD_THEMES.dark.bg};--hilight-card-ink:${HTML_CARD_THEMES.dark.ink};--hilight-card-muted:${HTML_CARD_THEMES.dark.muted};--hilight-card-line:${HTML_CARD_THEMES.dark.line};--hilight-card-accent:${HTML_CARD_THEMES.dark.accent};--hilight-card-surface:${HTML_CARD_THEMES.dark.surface}}
+:where(html,body){background:transparent;color:var(--hilight-card-ink)}
+:where(body){margin:0;font:14px/1.5 Geist,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+:where(a){color:var(--hilight-card-accent)}
+:where(hr){border:0;border-top:1px solid var(--hilight-card-line)}
+:where(code,pre){font-family:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+:where(:not(pre)>code){background:var(--hilight-card-surface);padding:1px 5px;border-radius:4px;font-size:0.9em}
+:where(pre){background:var(--hilight-card-surface);padding:10px 12px;border-radius:8px;overflow-x:auto}
+:where(blockquote){margin:0.75em 0;padding-left:12px;border-left:3px solid var(--hilight-card-line);color:var(--hilight-card-muted)}
+:where(table){border-collapse:collapse;width:100%}
+:where(th,td){border-bottom:1px solid var(--hilight-card-line);padding:6px 8px;text-align:left}
+:where(img,svg,video,canvas){max-width:100%}`;
+
+// Layout-only reset: keeps author backgrounds intact so an author-styled light
+// or dark card never loses its surface while keeping its text colour. Matches
+// both `<section>` and `[data-card]` cards and uses `flow-root` so inner
+// margins stay inside the card box when measuring its height.
+const CARD_LAYOUT_RESET = `html,body{margin:0!important;padding:0!important;max-width:none!important;width:auto!important;min-height:0!important;height:auto!important}
+[data-hilight-board]{display:block!important;margin:0!important;padding:0!important;max-width:none!important;width:auto!important;min-height:0!important;height:auto!important;border:0!important;box-shadow:none!important}
+[data-hilight-board]>section,[data-hilight-board]>[data-card]{display:flow-root!important;margin:0!important;border:0!important;border-radius:0!important;box-shadow:none!important;padding:2px 16px 16px!important;width:auto!important;height:auto!important;max-width:none!important;min-height:0!important;overflow:visible!important}
+[data-hilight-board]>section>:first-child,[data-hilight-board]>[data-card]>:first-child{margin-top:0!important}
+[data-hilight-board]>section>:last-child,[data-hilight-board]>[data-card]>:last-child{margin-bottom:0!important}
+html[data-hilight-theme="dark"][data-hilight-palette="light"] [data-hilight-board]>section,html[data-hilight-theme="dark"][data-hilight-palette="light"] [data-hilight-board]>[data-card],html[data-hilight-theme="light"][data-hilight-palette="dark"] [data-hilight-board]>section,html[data-hilight-theme="light"][data-hilight-palette="dark"] [data-hilight-board]>[data-card]{padding-top:12px!important}
+html[data-hilight-surface="light"],html[data-hilight-surface="light"] body{background-color:${HTML_CARD_THEMES.light.bg}!important;color-scheme:light!important}
+html[data-hilight-surface="dark"],html[data-hilight-surface="dark"] body{background-color:${HTML_CARD_THEMES.dark.bg}!important;color-scheme:dark!important}`;
+
+const HTML_SKIP_ATTRS = new Set(["data-hilight-theme", "data-hilight-surface", "data-hilight-palette", "style"]);
+const BODY_SKIP_ATTRS = new Set(["style"]);
+
+function cardRuntimeScript(cardId, theme, token) {
+  return `(()=>{try{
+var root=document.documentElement;
+var token=${inlineJson(String(token || ""))};
+var cardId=${inlineJson(String(cardId || ""))};
+var activeTheme=${inlineJson(theme === "dark" ? "dark" : "light")};
+var BACKDROPS={light:[255,255,255,255],dark:[27,28,30,255]};
+var ctx=null;
+var mirroredBg=false;
+var lastHeight=0;
+var lastSurface="";
+var raf=0;
+function toRgba(color){
+  if(!color||color==="transparent")return[0,0,0,0];
+  var m=/^rgba?\\(\\s*([\\d.]+)[,\\s]+([\\d.]+)[,\\s]+([\\d.]+)(?:\\s*[,\\/]\\s*([\\d.]+%?))?\\s*\\)$/i.exec(color);
+  if(m){
+    var a=m[4]===undefined?1:m[4].endsWith("%")?parseFloat(m[4])/100:parseFloat(m[4]);
+    return[Number(m[1]),Number(m[2]),Number(m[3]),Math.round(Math.max(0,Math.min(1,a))*255)];
+  }
+  if(!ctx){var c=document.createElement("canvas");c.width=1;c.height=1;ctx=c.getContext("2d",{willReadFrequently:true});}
+  if(!ctx)return[0,0,0,0];
+  ctx.clearRect(0,0,1,1);
+  ctx.fillStyle="rgba(0,0,0,0)";
+  ctx.fillStyle=color;
+  ctx.fillRect(0,0,1,1);
+  var d=ctx.getImageData(0,0,1,1).data;
+  return[d[0],d[1],d[2],d[3]];
+}
+function composite(fg,bg){
+  var fa=fg[3]/255,ba=bg[3]/255,a=fa+ba*(1-fa);
+  if(a<=0)return[0,0,0,0];
+  return[(fg[0]*fa+bg[0]*ba*(1-fa))/a,(fg[1]*fa+bg[1]*ba*(1-fa))/a,(fg[2]*fa+bg[2]*ba*(1-fa))/a,Math.round(a*255)];
+}
+function lum(c){
+  var out=0,w=[0.2126,0.7152,0.0722];
+  for(var i=0;i<3;i++){var s=c[i]/255;out+=w[i]*(s<=0.03928?s/12.92:Math.pow((s+0.055)/1.055,2.4));}
+  return out;
+}
+function contrast(a,b){
+  var l1=lum(a),l2=lum(b);
+  return(Math.max(l1,l2)+0.05)/(Math.min(l1,l2)+0.05);
+}
+function cardHost(){
+  return document.querySelector("[data-hilight-board]>section,[data-hilight-board]>[data-card]")||document.body;
+}
+function ensureContrast(){
+  root.removeAttribute("data-hilight-surface");
+  root.removeAttribute("data-hilight-palette");
+  if(mirroredBg){root.style.removeProperty("background-color");mirroredBg=false;}
+  var main=document.querySelector("[data-hilight-board]");
+  var host=cardHost();
+  var backdrop=BACKDROPS[activeTheme]||BACKDROPS.light;
+  var chain=[];
+  [root,document.body,main,host].forEach(function(n){if(n&&chain.indexOf(n)<0)chain.push(n);});
+  var authorBg=[0,0,0,0];
+  var opaqueStr="";
+  var rootOrBodyOpaque=false;
+  for(var i=0;i<chain.length;i++){
+    var raw=getComputedStyle(chain[i]).backgroundColor;
+    var rgba=toRgba(raw);
+    if(rgba[3]>=128){
+      opaqueStr=raw;
+      if(chain[i]===root||chain[i]===document.body)rootOrBodyOpaque=true;
+    }
+    authorBg=composite(rgba,authorBg);
+  }
+  if(authorBg[3]>=128){
+    var effBg=composite(authorBg,backdrop);
+    var surface=lum(effBg)>0.35?"light":"dark";
+    root.setAttribute("data-hilight-palette",surface);
+    if(!rootOrBodyOpaque&&opaqueStr){root.style.backgroundColor=opaqueStr;mirroredBg=true;}
+    return surface;
+  }
+  var totalChars=0,lowChars=0,darkLow=0,lightLow=0,sampled=0;
+  if(host){
+    var walker=document.createTreeWalker(host,NodeFilter.SHOW_TEXT);
+    var node;
+    while((node=walker.nextNode())&&sampled<60){
+      var text=(node.nodeValue||"").trim();
+      if(!text)continue;
+      var el=node.parentElement;
+      if(!el)continue;
+      var tag=el.tagName;
+      if(tag==="SCRIPT"||tag==="STYLE"||tag==="NOSCRIPT"||tag==="TEMPLATE"||el.closest("svg"))continue;
+      var cs=getComputedStyle(el);
+      if(cs.display==="none"||cs.visibility==="hidden")continue;
+      var ownSurface=false;
+      for(var cur=el;cur&&cur!==host;cur=cur.parentElement){
+        if(toRgba(getComputedStyle(cur).backgroundColor)[3]>=128){ownSurface=true;break;}
+      }
+      if(ownSurface)continue;
+      sampled++;
+      var fg=composite(toRgba(cs.color),backdrop);
+      var len=text.length;
+      totalChars+=len;
+      if(contrast(fg,backdrop)<3){
+        lowChars+=len;
+        if(lum(fg)<0.35)darkLow+=len;else lightLow+=len;
+      }
+    }
+    if(totalChars===0){
+      var hostFg=composite(toRgba(getComputedStyle(host).color),backdrop);
+      if(contrast(hostFg,backdrop)<3){
+        var fallback=lum(hostFg)<0.35?"light":"dark";
+        root.setAttribute("data-hilight-surface",fallback);
+        root.setAttribute("data-hilight-palette",fallback);
+        return fallback;
+      }
+    }else if(lowChars/totalChars>=0.5){
+      var flipped=darkLow>=lightLow?"light":"dark";
+      root.setAttribute("data-hilight-surface",flipped);
+      root.setAttribute("data-hilight-palette",flipped);
+      return flipped;
+    }
+  }
+  return "inherit";
+}
+function measure(){
+  raf=0;
+  var surface=ensureContrast();
+  var host=cardHost();
+  if(!host)return;
+  var rectH=host.getBoundingClientRect().height;
+  var h=Math.ceil(Math.max(rectH,host.scrollHeight))+2;
+  if(document.documentElement.scrollWidth>document.documentElement.clientWidth+1)h+=16;
+  if(h<=0)return;
+  if(Math.abs(h-lastHeight)<1&&surface===lastSurface)return;
+  lastHeight=h;
+  lastSurface=surface;
+  if(token&&window.parent&&window.parent!==window){
+    window.parent.postMessage({type:"hilight-board:cardMetrics",token:token,cardId:cardId,height:h,surface:surface},"*");
+  }
+}
+function schedule(){
+  if(raf)return;
+  raf=window.requestAnimationFrame(measure);
+}
+window.addEventListener("message",function(event){
+  if(event.source!==window.parent)return;
+  var msg=event.data||{};
+  if(msg.type==="hilight-board:cardTheme"&&msg.token===token){
+    activeTheme=msg.theme==="dark"?"dark":"light";
+    root.setAttribute("data-hilight-theme",activeTheme);
+    measure();
+  }
+});
+measure();
+window.addEventListener("load",measure);
+if(document.fonts&&document.fonts.ready)document.fonts.ready.then(schedule,function(){});
+var host=cardHost();
+if(host&&typeof ResizeObserver==="function")new ResizeObserver(schedule).observe(host);
+if(typeof MutationObserver==="function"){
+  if(document.head)new MutationObserver(schedule).observe(document.head,{childList:true,subtree:true});
+  new MutationObserver(function(muts){
+    for(var i=0;i<muts.length;i++){
+      if(!String(muts[i].attributeName||"").startsWith("data-hilight-")){schedule();break;}
+    }
+  }).observe(root,{attributes:true});
+}
+}catch(_e){}})();`;
+}
+
+/**
+ * Build the sandboxed `srcdoc` document for one HTML card on a board canvas.
+ * Injects theme-aware zero-specificity defaults before the board's `<head>`,
+ * keeps author backgrounds intact while resetting outer layout chrome, and
+ * embeds a self-contained runtime that guards text contrast and reports the
+ * card's measured content height to the parent board frame.
+ * @param {any} card
+ * @param {any} model
+ * @param {string} base
+ * @param {{ theme?: "light" | "dark", token?: string }} [options]
+ */
+export function buildHtmlCardSrcdoc(card, model, base, { theme = "light", token = "" } = {}) {
+  const activeTheme = theme === "dark" ? "dark" : "light";
+  const htmlAttrs = cardAttrString(model?.html_attrs, HTML_SKIP_ATTRS);
+  const bodyAttrs = cardAttrString(model?.body_attrs, BODY_SKIP_ATTRS);
+  const mainAttrs = cardAttrString(model?.main_attrs);
+  const sectionAttrs = cardAttrString(card?.attrs);
+  return `<!doctype html><html${htmlAttrs} data-hilight-theme="${activeTheme}"><head><meta charset="utf-8"><base href="${escapeAttrValue(base || "")}" target="_blank"><style data-hilight-card-base>${CARD_BASE_STYLE}</style>
+${model?.head || ""}
+<style data-hilight-card-reset>${CARD_LAYOUT_RESET}</style></head><body${bodyAttrs}><main${mainAttrs}><section${sectionAttrs}>${card?.html || ""}</section></main><script data-hilight-card-runtime>${cardRuntimeScript(card?.id || "", activeTheme, token)}</script></body></html>`;
+}
+
 // Code-card geometry, shared with the frame's renderer so a mark drawn over a
 // code card can be mapped back to the source lines under it.
 // Geometry of a code card, shared by the server (card size), the renderer, and
@@ -913,6 +1295,10 @@ function shiftArrow(arrow, startDelta, endDelta) {
   return { ...arrow, x: arrow.x + startDelta.x, y: arrow.y + startDelta.y, points };
 }
 
+function baselineRect(element) {
+  return element?.customData?.autoRect || element?.customData?.fileRect || null;
+}
+
 /**
  * Build one level's scene from the board model and the saved elements of that
  * level. The file decides which cards exist and what they show. A card keeps
@@ -938,6 +1324,9 @@ export function reconcileLevelElements(cards, saved, flows = []) {
       element.width = Number(previous.width) || element.width;
       element.height = Number(previous.height) || element.height;
       element.isDeleted = Boolean(previous.isDeleted);
+      if (previous.customData?.autoRect) {
+        element.customData = { ...element.customData, autoRect: previous.customData.autoRect };
+      }
     } else if (previous && !previous.isDeleted) {
       deltas.set(id, { x: element.x - Number(previous.x), y: element.y - Number(previous.y) });
     }
@@ -976,6 +1365,125 @@ export function reconcileLevelElements(cards, saved, flows = []) {
   }
   for (const element of cardElements) element.boundElements = bound.get(element.id) || [];
   return [...cardElements, ...links, ...marks];
+}
+
+/**
+ * Apply measured rendered heights to auto-sized HTML cards on one level and
+ * reflow unplaced, reviewer-unmoved cards around the updated boxes. Reviewer
+ * manual moves/resizes and explicit `data-h` heights are preserved, and
+ * `customData.fileRect` stays untouched while `customData.autoRect` tracks the
+ * Hilight-chosen rect so `summarizeBoardMarks` never reports auto-sizing as a
+ * reviewer edit.
+ * @param {any[]} cards cards belonging to the level
+ * @param {any[]} elements current scene elements on the level
+ * @param {any[]} flows board flows (other levels are ignored)
+ * @param {Map<string, number> | Record<string, number>} measuredHeights cardId -> total desired card height
+ * @returns {{ elements: any[], changed: boolean }}
+ */
+export function applyHtmlCardMeasurements(cards, elements, flows = [], measuredHeights = new Map()) {
+  const heights = measuredHeights instanceof Map ? measuredHeights : new Map(Object.entries(measuredHeights || {}));
+  const byElementId = new Map((Array.isArray(elements) ? elements : []).map((element) => [element.id, element]));
+  const levelId = cards[0]?.level ?? "";
+  const levelFlows = (Array.isArray(flows) ? flows : []).filter((flow) => (flow?.level ?? "") === levelId);
+
+  /** @type {Map<string, { userMoved: boolean, userResized: boolean, targetH: number, element: any }>} */
+  const info = new Map();
+  const virtualCards = [];
+  for (const card of cards) {
+    const element = byElementId.get(cardElementId(card.id));
+    if (!element || element.isDeleted) continue;
+    const base = baselineRect(element);
+    const userMoved = Boolean(
+      base && (Math.round(element.x) !== Math.round(base.x) || Math.round(element.y) !== Math.round(base.y)),
+    );
+    const userResized = Boolean(
+      base && (Math.round(element.width) !== Math.round(base.w) || Math.round(element.height) !== Math.round(base.h)),
+    );
+    let targetH = Math.round(element.height);
+    if (card.kind === "html" && card.auto_h === true && !userResized && heights.has(card.id)) {
+      const measured = Number(heights.get(card.id));
+      if (Number.isFinite(measured) && measured > 0) {
+        const clamped = Math.min(
+          Math.max(Math.round(measured), HTML_CARD_LAYOUT.minHeight),
+          HTML_CARD_LAYOUT.maxHeight,
+        );
+        if (Math.abs(clamped - element.height) >= 2) targetH = clamped;
+      }
+    }
+    info.set(card.id, { userMoved, userResized, targetH, element });
+    virtualCards.push({
+      ...card,
+      x: card.placed ? card.x : Math.round(element.x),
+      y: card.placed ? card.y : Math.round(element.y),
+      w: Math.round(element.width),
+      h: targetH,
+    });
+  }
+  if (!virtualCards.length) return { elements, changed: false };
+
+  placeLevelCards(virtualCards, levelFlows);
+  const layoutById = new Map(virtualCards.map((card) => [card.id, card]));
+
+  let changed = false;
+  const deltas = new Map();
+  const updatedById = new Map();
+  for (const card of cards) {
+    const entry = info.get(card.id);
+    const nextLayout = layoutById.get(card.id);
+    if (!entry || !nextLayout) continue;
+    const { element, userMoved, userResized, targetH } = entry;
+    const nextX = !card.placed && !userMoved ? nextLayout.x : element.x;
+    const nextY = !card.placed && !userMoved ? nextLayout.y : element.y;
+    const nextW = element.width;
+    const nextH = card.kind === "html" && card.auto_h === true && !userResized ? targetH : element.height;
+    const posChanged = Math.abs(nextX - element.x) >= 1 || Math.abs(nextY - element.y) >= 1;
+    const sizeChanged = Math.abs(nextH - element.height) >= 1;
+    if (!posChanged && !sizeChanged) continue;
+    changed = true;
+    if (posChanged) {
+      deltas.set(element.id, { x: nextX - element.x, y: nextY - element.y });
+    }
+    const prevBase = baselineRect(element);
+    const autoRect = {
+      x: !card.placed && !userMoved ? Math.round(nextX) : Math.round(prevBase ? prevBase.x : nextX),
+      y: !card.placed && !userMoved ? Math.round(nextY) : Math.round(prevBase ? prevBase.y : nextY),
+      w: Math.round(prevBase ? prevBase.w : nextW),
+      h: !userResized ? Math.round(nextH) : Math.round(prevBase ? prevBase.h : nextH),
+    };
+    updatedById.set(element.id, {
+      ...element,
+      x: nextX,
+      y: nextY,
+      height: nextH,
+      version: (Number(element.version) || 0) + 1,
+      versionNonce: ((Number(element.versionNonce) || 0) + 1) >>> 0,
+      customData: { ...(element.customData || {}), autoRect },
+    });
+  }
+  if (!changed) return { elements, changed: false };
+
+  const zero = { x: 0, y: 0 };
+  const nextElements = elements.map((element) => {
+    if (updatedById.has(element.id)) return updatedById.get(element.id);
+    if (!element.isDeleted && !isCardElement(element) && !isLinkElement(element)) {
+      const start = element.startBinding?.elementId;
+      const end = element.endBinding?.elementId;
+      if (start || end) {
+        const startDelta = (start && deltas.get(start)) || zero;
+        const endDelta = (end && deltas.get(end)) || zero;
+        if (startDelta !== zero || endDelta !== zero) {
+          const shifted = shiftArrow(element, startDelta, endDelta);
+          return {
+            ...shifted,
+            version: (Number(element.version) || 0) + 1,
+            versionNonce: ((Number(element.versionNonce) || 0) + 1) >>> 0,
+          };
+        }
+      }
+    }
+    return element;
+  });
+  return { elements: nextElements, changed: true };
 }
 
 /** Tag reviewer-made elements with the level they were drawn on. */
@@ -1103,7 +1611,7 @@ export function summarizeBoardMarks(board, elements, { scrollTops = {} } = {}) {
       }
       const rect = bounds(element);
       cards.push({ card, rect, raw: { y: rect.y1, h: rect.y2 - rect.y1 } });
-      const before = element.customData?.fileRect;
+      const before = baselineRect(element);
       if (before) {
         const moved = Math.round(element.x) !== before.x || Math.round(element.y) !== before.y;
         const resized = Math.round(element.width) !== before.w || Math.round(element.height) !== before.h;
