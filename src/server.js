@@ -938,9 +938,19 @@ export async function serve({
         return;
       }
       const { holder, previousPresence, conflict, missing } = await pollOwnershipLock.runExclusive(async () => {
-        const currentHolder = activePolls.get(key);
-        if (currentHolder && !takeover) return { conflict: listenerConflict(currentHolder, "LISTENER_ACTIVE") };
-        const nextHolder = { key, owner, startedAt: Date.now(), replaced: false, replace: null };
+        let currentHolder = activePolls.get(key);
+        if (currentHolder && !takeover) {
+          // A registered holder whose response socket is provably dead cannot be listening: its
+          // client vanished without the server observing the disconnect. Release it and admit the
+          // newcomer so the common crash shape does not need a manual --takeover; a live holder
+          // still refuses.
+          if (!pollHolderResponseDead(currentHolder)) {
+            return { conflict: listenerConflict(currentHolder, "LISTENER_ACTIVE") };
+          }
+          releasePollListener(currentHolder, activePolls, deliveredFeedback, events);
+          currentHolder = activePolls.get(key);
+        }
+        const nextHolder = { key, owner, startedAt: Date.now(), replaced: false, replace: null, res };
         claimedHolder = nextHolder;
         const priorPresence = presenceSignature(key, activePolls, deliveredFeedback);
         if (currentHolder) {
@@ -2787,6 +2797,17 @@ export function hasLiveReloadRootOptIn(html) {
   const searchableHtml = html.replace(/<!--[\s\S]*?-->/g, "");
   if (/<html\b[^>]*\sdata-lavish-live-reload-root(?:[\s=>/]|$)[^>]*>/i.test(searchableHtml)) return true;
   return /<meta\b(?=[^>]*name=["']lavish-live-reload["'])(?=[^>]*content=["']root["'])[^>]*>/i.test(searchableHtml);
+}
+
+// Whether a registered poll holder's response is provably dead: the response or its socket was
+// destroyed, or the response already ended while the holder still sits in activePolls. Holders
+// that are merely quiet (a hung client that keeps its socket open) are NOT dead - ownership
+// stays with them until they disconnect or are taken over. Holders predating the `res` field
+// report not dead and keep the manual --takeover path.
+export function pollHolderResponseDead(holder) {
+  const res = holder?.res;
+  if (!res) return false;
+  return res.destroyed || res.writableEnded || Boolean(res.socket?.destroyed);
 }
 
 function releasePollListener(holder, activePolls, deliveredFeedback, events) {
