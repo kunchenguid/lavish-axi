@@ -7,6 +7,7 @@ import {
   openSync,
   readFileSync,
   realpathSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { access, readFile, writeFile } from "node:fs/promises";
@@ -1977,7 +1978,7 @@ async function ensureServer({ forceRestart = false, reloadKey = "" } = {}) {
       }
     }
   }
-  await startServer(port, { alsoListen });
+  await startServerOnce(port, { alsoListen });
   const replacedForNetwork =
     Boolean(existing) &&
     existing.app === "lavish-axi" &&
@@ -2258,6 +2259,89 @@ function unidentifiedListenerError(baseUrl) {
     "SERVER_ERROR",
     [`Stop the process listening on ${host} yourself, or set LAVISH_AXI_PORT to another port`],
   );
+}
+
+// Concurrent first-starts: when the shared server is down and N fleet boards re-arm at once,
+// every CLI spawns its own detached child; the losers exit on the port lock, but their cold
+// boots race the winner's for CPU and can push every caller past its startup deadline. A
+// state-dir lockfile lets one caller spawn while the others wait, then find the winner's server
+// healthy and skip their own spawn. A contender that cannot take the lock within the startup
+// budget spawns anyway: a redundant child is harmless, a missing server is not.
+export function serverStartLockPath() {
+  return path.join(stateDir(), "server-start.lock");
+}
+
+function holderProcessAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === "EPERM";
+  }
+}
+
+// Returns a release function that removes the lock, or null when the budget elapsed with a live
+// holder still holding it. A lock whose recorded PID is gone (crashed CLI) is broken in place so
+// the next contender can take it.
+export async function acquireServerStartLock({ budgetMs = resolveStartupWaitMs(), delayMs = 50 } = {}) {
+  await ensureStateDir();
+  const lockPath = serverStartLockPath();
+  const deadline = Date.now() + budgetMs;
+  for (;;) {
+    try {
+      writeFileSync(lockPath, String(process.pid), { flag: "wx" });
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        try {
+          unlinkSync(lockPath);
+        } catch {
+          // A missing lock file is still a released lock.
+        }
+      };
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+    }
+    let holderPid;
+    try {
+      holderPid = Number(readFileSync(lockPath, "utf8").trim());
+    } catch {
+      // The holder released between our refused create and this read; retry the create.
+      continue;
+    }
+    if (!Number.isInteger(holderPid) || holderPid <= 0 || holderPid === process.pid || !holderProcessAlive(holderPid)) {
+      try {
+        unlinkSync(lockPath);
+      } catch {
+        // Another contender broke the stale lock first; retry the exclusive create.
+      }
+      continue;
+    }
+    if (Date.now() >= deadline) return null;
+    await delay(delayMs);
+  }
+}
+
+// The cold-start path of ensureServer. Replacement restarts (race/network-stale) keep calling
+// startServer directly: their port handoff is already serialized by the shutdown handshake.
+async function startServerOnce(port, { alsoListen }) {
+  const release = await acquireServerStartLock();
+  try {
+    const existing = await findRunningServer(port);
+    if (existing.foreign || existing.health?.app === "lavish-axi") return;
+    await startServer(port, { alsoListen });
+    // Hold the lock while the spawned server boots so the next contender's re-check sees it
+    // healthy instead of spawning a redundant child of its own.
+    const deadline = Date.now() + resolveStartupWaitMs();
+    while (Date.now() < deadline) {
+      const live = await findRunningServer(port);
+      if (live.foreign || live.health?.app === "lavish-axi") return;
+      await delay(100);
+    }
+  } finally {
+    release?.();
+  }
 }
 
 async function startServer(port, { alsoListen = [] } = {}) {
