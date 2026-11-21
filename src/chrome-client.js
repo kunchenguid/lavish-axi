@@ -4779,6 +4779,7 @@ function connectLiveEvents() {
   socket.addEventListener("open", () => {
     eventReconnectDelayMs = 500;
     liveEventFailures = 0;
+    // A reconnect only implies a server restart if no durable signal says otherwise; a transient blip while the server stayed up can set this falsely, and a server-delivered session id is the durable future fix.
     if (liveEventsEverOpened) listenerLostInRestart = true;
     liveEventsEverOpened = true;
     unreachableDismissed = false;
