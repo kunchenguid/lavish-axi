@@ -28,7 +28,8 @@ function captureResponse() {
     });
     server.on("error", reject);
     server.listen(0, "127.0.0.1", () => {
-      const request = http.get(`http://127.0.0.1:${server.address().port}`);
+      const address = /** @type {import("node:net").AddressInfo} */ (server.address());
+      const request = http.get(`http://127.0.0.1:${address.port}`);
       request.on("error", () => {});
     });
   });
