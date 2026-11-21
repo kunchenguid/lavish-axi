@@ -1987,7 +1987,8 @@ async function ensureServer({ forceRestart = false, reloadKey = "" } = {}) {
     !isServerOlderThanCli(VERSION, existing.version);
   let networkRestarted = replacedForNetwork;
   let raceRestarted = false;
-  let deadline = Date.now() + 5000;
+  const startupWaitMs = resolveStartupWaitMs();
+  let deadline = Date.now() + startupWaitMs;
   while (Date.now() < deadline) {
     const {
       baseUrl: liveUrl,
@@ -2018,7 +2019,7 @@ async function ensureServer({ forceRestart = false, reloadKey = "" } = {}) {
       await requestShutdown(liveUrl, { reloadKey, reason: serverReplacementReason(VERSION, health) });
       if (!(await waitForPortFree(liveUrl, 3000))) break;
       await startServer(port, { alsoListen });
-      deadline = Date.now() + 5000;
+      deadline = Date.now() + startupWaitMs;
       continue;
     }
     if (health?.network_stale === true && health.app === "lavish-axi") {
@@ -2031,7 +2032,7 @@ async function ensureServer({ forceRestart = false, reloadKey = "" } = {}) {
       if (!(await waitForPortFree(liveUrl, 3000))) break;
       await startServer(port, { alsoListen });
       networkRestarted = true;
-      deadline = Date.now() + 5000;
+      deadline = Date.now() + startupWaitMs;
       continue;
     }
     await delay(100);
@@ -2048,6 +2049,19 @@ function missingHostsError(port, missingHosts) {
     "SERVER_ERROR",
     ["Run `lavish-axi stop`, then retry"],
   );
+}
+
+// How long ensureServer keeps probing for a healthy server after spawning one before it gives up.
+// On a loaded machine a cold node boot plus bind plus first probe can outrun a short deadline and
+// fail a command whose server comes up healthy moments later, so the default is generous. Set
+// LAVISH_AXI_STARTUP_WAIT_MS to a custom millisecond budget.
+export const DEFAULT_STARTUP_WAIT_MS = 15000;
+export function resolveStartupWaitMs(env = process.env) {
+  const raw = env.LAVISH_AXI_STARTUP_WAIT_MS?.trim();
+  if (raw === undefined || raw === "") return DEFAULT_STARTUP_WAIT_MS;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) return DEFAULT_STARTUP_WAIT_MS;
+  return Math.min(value, 2147483647);
 }
 
 // Pure helper so the upgrade-detection logic is unit-testable without spinning up HTTP.
