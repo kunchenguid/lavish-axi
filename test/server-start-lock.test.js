@@ -79,3 +79,49 @@ test("a corrupt start lock file is treated as stale", async () => {
     release();
   });
 });
+
+test("an empty lock file between create and PID write is not broken", async () => {
+  await withStateDir(async () => {
+    const holder = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { stdio: "ignore" });
+    try {
+      await writeFile(serverStartLockPath(), "");
+      await writeFile(serverStartLockPath(), String(holder.pid));
+      const contender = await acquireServerStartLock({ budgetMs: 120, delayMs: 10 });
+      assert.equal(contender, null, "the holder keeps the lock");
+      // A caller that read nothing between the holder's create and PID write must not break it.
+      await rm(serverStartLockPath(), { force: true });
+      await writeFile(serverStartLockPath(), "");
+      const justCreated = await acquireServerStartLock({ budgetMs: 120, delayMs: 10 });
+      assert.equal(justCreated, null, "a just-created empty lock is not treated as stale");
+      // Restore the holder's PID record, then retire the holder so the lock becomes takeable.
+      await rm(serverStartLockPath(), { force: true });
+      await writeFile(serverStartLockPath(), String(holder.pid));
+    } finally {
+      holder.kill("SIGKILL");
+      await exitCodeOf(holder);
+    }
+    const release = await acquireServerStartLock({ budgetMs: 1000, delayMs: 5 });
+    assert.equal(typeof release, "function", "once the holder exits the lock is taken");
+    release();
+  });
+});
+
+test("a release does not remove a successor's lock that replaced it", async () => {
+  await withStateDir(async () => {
+    const successor = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { stdio: "ignore" });
+    try {
+      const release = await acquireServerStartLock({ budgetMs: 100, delayMs: 5 });
+      // A contender broke our lock and took over with its own live-pid lock under a new inode.
+      await rm(serverStartLockPath(), { force: true });
+      await writeFile(serverStartLockPath(), String(successor.pid));
+      release();
+      assert.equal(await readFile(serverStartLockPath(), "utf8"), String(successor.pid));
+    } finally {
+      successor.kill("SIGKILL");
+      await exitCodeOf(successor);
+    }
+    const release = await acquireServerStartLock({ budgetMs: 1000, delayMs: 5 });
+    assert.equal(typeof release, "function");
+    release();
+  });
+});

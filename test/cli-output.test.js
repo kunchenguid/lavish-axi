@@ -3728,8 +3728,18 @@ test("a LISTENER_ACTIVE poll error gains the literal --takeover re-run command",
   withTakeoverSuggestion(error, "/tmp/report.html");
   assert.deepEqual(error.suggestions, [
     "Use --takeover only when you intend to displace the current listener",
-    "Re-run: lavish-axi poll /tmp/report.html --takeover",
+    "Re-run: lavish-axi poll '/tmp/report.html' --takeover",
   ]);
+});
+
+test("the takeover re-run command quotes a path with spaces", () => {
+  const error = new AxiError("Lavish Editor already has an active poll listener", "LISTENER_ACTIVE", []);
+  withTakeoverSuggestion(error, "/tmp/design review.html");
+  assert.deepEqual(error.suggestions, ["Re-run: lavish-axi poll '/tmp/design review.html' --takeover"]);
+
+  const quoted = new AxiError("already listening", "LISTENER_ACTIVE", []);
+  withTakeoverSuggestion(quoted, "/tmp/it's a report.html");
+  assert.deepEqual(quoted.suggestions, ["Re-run: lavish-axi poll '/tmp/it'\\''s a report.html' --takeover"]);
 });
 
 test("non-listener poll errors pass through without a takeover suggestion", () => {

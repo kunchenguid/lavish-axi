@@ -4,9 +4,11 @@ import {
   createReadStream,
   existsSync,
   mkdirSync,
+  fstatSync,
   openSync,
   readFileSync,
   realpathSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -512,11 +514,19 @@ async function pollCommand(args) {
 
 const REPLY_VALUE_FLAGS = ["--agent-reply", "--agent-reply-file"];
 
+// Single-quote a value for a POSIX shell so a copy-paste command survives spaces and quotes.
+function shellSingleQuote(value) {
+  return `'${String(value).replaceAll("'", `'\\''`)}'`;
+}
+
 // LISTENER_ACTIVE already carries the holder's label and age; the actionable suggestion used to
 // be generic. Append the literal recovery command for this file so the agent can copy-paste it.
 export function withTakeoverSuggestion(error, absolute) {
   if (error?.code === "LISTENER_ACTIVE") {
-    error.suggestions = [...(error.suggestions || []), `Re-run: lavish-axi poll ${absolute} --takeover`];
+    error.suggestions = [
+      ...(error.suggestions || []),
+      `Re-run: lavish-axi poll ${shellSingleQuote(absolute)} --takeover`,
+    ];
   }
   return error;
 }
@@ -1992,7 +2002,12 @@ async function ensureServer({ forceRestart = false, reloadKey = "" } = {}) {
       }
     }
   }
-  await startServerOnce(port, { alsoListen });
+  // One startup deadline governs the whole cold start: the post-spawn probe inside
+  // startServerOnce and the loop below draw from the same budget instead of each taking a full
+  // LAVISH_AXI_STARTUP_WAIT_MS.
+  const startupWaitMs = resolveStartupWaitMs();
+  const startupDeadline = Date.now() + startupWaitMs;
+  await startServerOnce(port, { alsoListen, probeBudgetMs: startupDeadline - Date.now() });
   const replacedForNetwork =
     Boolean(existing) &&
     existing.app === "lavish-axi" &&
@@ -2002,8 +2017,7 @@ async function ensureServer({ forceRestart = false, reloadKey = "" } = {}) {
     !isServerOlderThanCli(VERSION, existing.version);
   let networkRestarted = replacedForNetwork;
   let raceRestarted = false;
-  const startupWaitMs = resolveStartupWaitMs();
-  let deadline = Date.now() + startupWaitMs;
+  let deadline = startupDeadline;
   while (Date.now() < deadline) {
     const {
       baseUrl: liveUrl,
@@ -2301,30 +2315,72 @@ export async function acquireServerStartLock({ budgetMs = resolveStartupWaitMs()
   await ensureStateDir();
   const lockPath = serverStartLockPath();
   const deadline = Date.now() + budgetMs;
+  let ownIno = null;
+  let ownDev = null;
   for (;;) {
     try {
       writeFileSync(lockPath, String(process.pid), { flag: "wx" });
+      try {
+        const stat = statSync(lockPath);
+        ownIno = stat.ino;
+        ownDev = stat.dev;
+      } catch {
+        ownIno = null;
+        ownDev = null;
+      }
       let released = false;
       return () => {
         if (released) return;
         released = true;
         try {
+          // Remove only the file we created: if a contender broke our stale lock and took
+          // over, the path now names its lock and must survive.
+          if (ownIno !== null) {
+            const stat = statSync(lockPath);
+            if (stat.ino !== ownIno || stat.dev !== ownDev) return;
+          }
           unlinkSync(lockPath);
         } catch {
-          // A missing lock file is still a released lock.
+          // A missing or replaced lock file is still a released lock.
         }
       };
     } catch (error) {
       if (error?.code !== "EEXIST") throw error;
     }
-    let holderPid;
+    let holderFd;
     try {
-      holderPid = Number(readFileSync(lockPath, "utf8").trim());
+      holderFd = openSync(lockPath, "r");
     } catch {
-      // The holder released between our refused create and this read; retry the create.
+      // The holder released between our refused create and this open; retry the create.
       continue;
     }
-    if (!Number.isInteger(holderPid) || holderPid <= 0 || holderPid === process.pid || !holderProcessAlive(holderPid)) {
+    let stale = false;
+    try {
+      // Read and judge through one open handle, then confirm the path still names that same
+      // file before breaking it, so a contender's replacement is never mistaken for the
+      // content we judged stale.
+      const holderStat = fstatSync(holderFd);
+      const raw = readFileSync(holderFd, "utf8").trim();
+      const holderPid = Number(raw);
+      if (raw === "") {
+        // A lock between create and its PID write looks empty: not ours to break, or two
+        // callers could both remove and spawn.
+      } else if (Number.isInteger(holderPid) && holderPid > 0) {
+        if (holderPid === process.pid || !holderProcessAlive(holderPid)) {
+          try {
+            const pathStat = statSync(lockPath);
+            stale = pathStat.dev === holderStat.dev && pathStat.ino === holderStat.ino;
+          } catch {
+            // Released meanwhile; retry the exclusive create.
+          }
+        }
+      } else {
+        stale = true;
+      }
+    } finally {
+      closeSync(holderFd);
+    }
+    if (stale) {
       try {
         unlinkSync(lockPath);
       } catch {
@@ -2332,6 +2388,7 @@ export async function acquireServerStartLock({ budgetMs = resolveStartupWaitMs()
       }
       continue;
     }
+    // A live PID or a lock still between create and PID write is not ours to break: wait.
     if (Date.now() >= deadline) return null;
     await delay(delayMs);
   }
@@ -2339,15 +2396,17 @@ export async function acquireServerStartLock({ budgetMs = resolveStartupWaitMs()
 
 // The cold-start path of ensureServer. Replacement restarts (race/network-stale) keep calling
 // startServer directly: their port handoff is already serialized by the shutdown handshake.
-async function startServerOnce(port, { alsoListen }) {
+async function startServerOnce(port, { alsoListen, probeBudgetMs }) {
   const release = await acquireServerStartLock();
   try {
     const existing = await findRunningServer(port);
     if (existing.foreign || existing.health?.app === "lavish-axi") return;
     await startServer(port, { alsoListen });
     // Hold the lock while the spawned server boots so the next contender's re-check sees it
-    // healthy instead of spawning a redundant child of its own.
-    const deadline = Date.now() + resolveStartupWaitMs();
+    // healthy instead of spawning a redundant child of its own. The probe budget is carved out
+    // of the caller's single startup deadline so LAVISH_AXI_STARTUP_WAIT_MS bounds the whole
+    // cold start once, not once per waiting layer.
+    const deadline = Date.now() + Math.max(0, probeBudgetMs);
     while (Date.now() < deadline) {
       const live = await findRunningServer(port);
       if (live.foreign || live.health?.app === "lavish-axi") return;
