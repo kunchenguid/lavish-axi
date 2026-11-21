@@ -9083,8 +9083,7 @@ test("after a live-socket drop and reconnect, a waiting receipt names the server
 
   const reconnected = chrome.webSocketAt(1);
   reconnected.protocolListeners.get("open")();
-  const presence = (data) =>
-    reconnected.listeners.get("agent-presence")({ data: JSON.stringify(data) });
+  const presence = (data) => reconnected.listeners.get("agent-presence")({ data: JSON.stringify(data) });
 
   presence({ state: "waiting" });
   assert.equal(
@@ -9110,9 +9109,7 @@ test("a first-session wait without any reconnect still reads as no listener", as
   });
   const bubbles = chrome.element("chatLog").children;
   chrome.webSocket().protocolListeners.get("open")();
-  chrome
-    .eventSource()
-    .listeners.get("agent-presence")({ data: JSON.stringify({ state: "waiting" }) });
+  chrome.eventSource().listeners.get("agent-presence")({ data: JSON.stringify({ state: "waiting" }) });
   assert.equal(receiptNote(bubbles[0].innerHTML), "No agent is listening");
 });
 

@@ -481,15 +481,20 @@ async function pollCommand(args) {
             body: JSON.stringify(agentReply ? { agent_reply: agentReply } : {}),
           }
         : {};
-    const response = await fetchJson(`${baseUrl}/api/poll?${query}`, {
-      ...request,
-      // Poll ownership is claimed before the response is available. Retrying a transport failure
-      // can leave the first claim alive and make the retry reject itself as LISTENER_ACTIVE.
-      retries: 0,
-      onResponse: (pollResponse) => {
-        if (pollResponse.headers.get(POLL_STATE_HEADER) === "listening") notifyHerdrPollReady();
-      },
-    });
+    let response;
+    try {
+      response = await fetchJson(`${baseUrl}/api/poll?${query}`, {
+        ...request,
+        // Poll ownership is claimed before the response is available. Retrying a transport failure
+        // can leave the first claim alive and make the retry reject itself as LISTENER_ACTIVE.
+        retries: 0,
+        onResponse: (pollResponse) => {
+          if (pollResponse.headers.get(POLL_STATE_HEADER) === "listening") notifyHerdrPollReady();
+        },
+      });
+    } catch (error) {
+      throw withTakeoverSuggestion(error, absolute);
+    }
     if (response.code === "LISTENER_REPLACED") {
       throw new AxiError("Lavish Editor poll listener was replaced by a takeover", "LISTENER_REPLACED", [
         `Re-run lavish-axi poll ${absolute} only if you intend to take over listening`,
@@ -506,6 +511,15 @@ async function pollCommand(args) {
 }
 
 const REPLY_VALUE_FLAGS = ["--agent-reply", "--agent-reply-file"];
+
+// LISTENER_ACTIVE already carries the holder's label and age; the actionable suggestion used to
+// be generic. Append the literal recovery command for this file so the agent can copy-paste it.
+export function withTakeoverSuggestion(error, absolute) {
+  if (error?.code === "LISTENER_ACTIVE") {
+    error.suggestions = [...(error.suggestions || []), `Re-run: lavish-axi poll ${absolute} --takeover`];
+  }
+  return error;
+}
 const REPLY_TOO_LARGE_HELP = "Shorten the reply, then retry `lavish-axi reply <html-file>`";
 
 async function replyCommand(args) {

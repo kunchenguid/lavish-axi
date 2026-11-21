@@ -38,6 +38,7 @@ import {
   herdrPollChimeEnabled,
   normalizeArgv,
   notifyHerdrPollReady,
+  withTakeoverSuggestion,
   resolveShareRequest,
   pollInterruptedText,
   pollWaitBannerText,
@@ -3716,4 +3717,29 @@ test("design output owns the library icon directive and the diagram playbook poi
   assert.match(diagram, /whiteboard_tooling\.library_icons/);
   assert.doesNotMatch(diagram, /%% lavish-icon/, "the syntax has one owner surface");
   assert.doesNotMatch(JSON.stringify(createHomeOutput({ bin: "lavish-axi", sessions: [] })), /lavish-icon|libraries/);
+});
+
+test("a LISTENER_ACTIVE poll error gains the literal --takeover re-run command", () => {
+  const error = new AxiError(
+    "Lavish Editor already has an active poll listener (current listener: worker-7; active for 5012ms)",
+    "LISTENER_ACTIVE",
+    ["Use --takeover only when you intend to displace the current listener"],
+  );
+  withTakeoverSuggestion(error, "/tmp/report.html");
+  assert.deepEqual(error.suggestions, [
+    "Use --takeover only when you intend to displace the current listener",
+    "Re-run: lavish-axi poll /tmp/report.html --takeover",
+  ]);
+});
+
+test("non-listener poll errors pass through without a takeover suggestion", () => {
+  const plain = new AxiError("Lavish Editor request failed: 500", "SERVER_ERROR", ["retry later"]);
+  withTakeoverSuggestion(plain, "/tmp/report.html");
+  assert.deepEqual(plain.suggestions, ["retry later"]);
+
+  const bare = new AxiError("Lavish Editor request failed: 500", "SERVER_ERROR");
+  assert.equal(withTakeoverSuggestion(bare, "/tmp/report.html"), bare);
+  assert.deepEqual(bare.suggestions, []);
+
+  assert.equal(withTakeoverSuggestion(null, "/tmp/report.html"), null);
 });
