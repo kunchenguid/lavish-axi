@@ -37,6 +37,8 @@ queued ──send──> sent ──poll takes it──> seen ──artifact cha
 - **queued**: in the tab only (dashed bubble). Unchanged.
 - **sent**: a `role: "user"` chat entry with no `delivered_at`. The bubble says why it has not been
   seen, from the live presence the chrome already holds: "No agent is listening" (`waiting`),
+  "Agent listener lost in a server restart — it will re-attach on the agent's next poll"
+  (waiting after a live-event reconnect, see `listenerLostInRestart` in `src/chrome-client.js`),
   "Agent is busy; delivered on its next poll" (`working` / external listener), or "Delivering"
   while a poll is attached, which lasts milliseconds.
 - **seen**: `delivered_at` set by `takeFeedback`.
