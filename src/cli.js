@@ -519,14 +519,19 @@ function shellSingleQuote(value) {
   return `'${String(value).replaceAll("'", `'\\''`)}'`;
 }
 
+// Double-quote a value for Windows cmd, which does not treat POSIX single quotes as quoting.
+function shellDoubleQuote(value) {
+  return `"${String(value).replaceAll('"', '""')}"`;
+}
+
 // LISTENER_ACTIVE already carries the holder's label and age; the actionable suggestion used to
 // be generic. Append the literal recovery command for this file so the agent can copy-paste it.
 export function withTakeoverSuggestion(error, absolute) {
   if (error?.code === "LISTENER_ACTIVE") {
-    error.suggestions = [
-      ...(error.suggestions || []),
-      `Re-run: lavish-axi poll ${shellSingleQuote(absolute)} --takeover`,
-    ];
+    // Quote for the shell that will run the pasted command: cmd.exe keeps POSIX single
+    // quotes in the filename, so Windows gets a double-quoted form.
+    const quoted = process.platform === "win32" ? shellDoubleQuote(absolute) : shellSingleQuote(absolute);
+    error.suggestions = [...(error.suggestions || []), `Re-run: lavish-axi poll ${quoted} --takeover`];
   }
   return error;
 }
@@ -2067,6 +2072,26 @@ async function ensureServer({ forceRestart = false, reloadKey = "" } = {}) {
     await delay(100);
   }
   if (unidentified) throw unidentifiedListenerError(unidentified);
+  // startServerOnce can return having found a healthy server right at the deadline, so the
+  // wait loop above never runs. Re-check once before reporting failure: a running server is
+  // never a did-not-start error.
+  {
+    const {
+      baseUrl: finalUrl,
+      health: finalHealth,
+      duplicates: finalDuplicates,
+      foreign: finalForeign,
+    } = await findRunningServer(port, { reconcileNetwork: true });
+    if (finalForeign) throw otherInstallationError(port, finalForeign);
+    const finalMissing =
+      finalHealth?.app === "lavish-axi"
+        ? missingServerHosts(finalHealth, hostsToServe(requiredHosts, finalDuplicates))
+        : [];
+    if (finalHealth && !shouldRestartServer(VERSION, finalHealth) && finalMissing.length === 0) {
+      return adoptServer(finalUrl, finalDuplicates, reloadKey);
+    }
+    if (finalMissing.length > 0) throw missingHostsError(port, finalMissing);
+  }
   throw new AxiError("Lavish Editor server did not start", "SERVER_ERROR", [
     `Run \`lavish-axi server --port ${port}\` to inspect server startup`,
   ]);
@@ -2334,10 +2359,12 @@ export async function acquireServerStartLock({ budgetMs = resolveStartupWaitMs()
         released = true;
         try {
           // Remove only the file we created: if a contender broke our stale lock and took
-          // over, the path now names its lock and must survive.
+          // over, the path now names its lock (different inode or different PID) and must
+          // survive.
           if (ownIno !== null) {
             const stat = statSync(lockPath);
             if (stat.ino !== ownIno || stat.dev !== ownDev) return;
+            if (readFileSync(lockPath, "utf8").trim() !== String(process.pid)) return;
           }
           unlinkSync(lockPath);
         } catch {
@@ -2355,11 +2382,12 @@ export async function acquireServerStartLock({ budgetMs = resolveStartupWaitMs()
       continue;
     }
     let stale = false;
+    let holderStat;
     try {
       // Read and judge through one open handle, then confirm the path still names that same
       // file before breaking it, so a contender's replacement is never mistaken for the
       // content we judged stale.
-      const holderStat = fstatSync(holderFd);
+      holderStat = fstatSync(holderFd);
       const raw = readFileSync(holderFd, "utf8").trim();
       const holderPid = Number(raw);
       if (raw === "") {
@@ -2367,12 +2395,7 @@ export async function acquireServerStartLock({ budgetMs = resolveStartupWaitMs()
         // callers could both remove and spawn.
       } else if (Number.isInteger(holderPid) && holderPid > 0) {
         if (holderPid === process.pid || !holderProcessAlive(holderPid)) {
-          try {
-            const pathStat = statSync(lockPath);
-            stale = pathStat.dev === holderStat.dev && pathStat.ino === holderStat.ino;
-          } catch {
-            // Released meanwhile; retry the exclusive create.
-          }
+          stale = true;
         }
       } else {
         stale = true;
@@ -2380,11 +2403,21 @@ export async function acquireServerStartLock({ budgetMs = resolveStartupWaitMs()
     } finally {
       closeSync(holderFd);
     }
-    if (stale) {
+    if (stale && holderStat) {
+      // Re-open and re-check the inode immediately before unlinking: between our read and
+      // this open a contender may have replaced the file, and its fresh lock must survive.
       try {
-        unlinkSync(lockPath);
+        const breakFd = openSync(lockPath, "r");
+        try {
+          const breakStat = fstatSync(breakFd);
+          if (breakStat.dev === holderStat.dev && breakStat.ino === holderStat.ino) {
+            unlinkSync(lockPath);
+          }
+        } finally {
+          closeSync(breakFd);
+        }
       } catch {
-        // Another contender broke the stale lock first; retry the exclusive create.
+        // Released or replaced meanwhile; retry the exclusive create.
       }
       continue;
     }

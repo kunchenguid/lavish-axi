@@ -125,3 +125,23 @@ test("a release does not remove a successor's lock that replaced it", async () =
     release();
   });
 });
+
+test("a release does not remove a same-inode lock whose recorded PID is no longer ours", async () => {
+  await withStateDir(async () => {
+    const successor = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { stdio: "ignore" });
+    try {
+      const release = await acquireServerStartLock({ budgetMs: 100, delayMs: 5 });
+      // A contender rewrote the path's content to its own live PID under the same inode
+      // (same dev/ino, different recorded holder): the path no longer names our lock.
+      await writeFile(serverStartLockPath(), String(successor.pid));
+      release();
+      assert.equal(await readFile(serverStartLockPath(), "utf8"), String(successor.pid));
+    } finally {
+      successor.kill("SIGKILL");
+      await exitCodeOf(successor);
+    }
+    const release = await acquireServerStartLock({ budgetMs: 1000, delayMs: 5 });
+    assert.equal(typeof release, "function");
+    release();
+  });
+});
