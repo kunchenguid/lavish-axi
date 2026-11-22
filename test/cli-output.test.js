@@ -3726,20 +3726,45 @@ test("a LISTENER_ACTIVE poll error gains the literal --takeover re-run command",
     ["Use --takeover only when you intend to displace the current listener"],
   );
   withTakeoverSuggestion(error, "/tmp/report.html");
+  const quoted = process.platform === "win32" ? '"/tmp/report.html"' : "'/tmp/report.html'";
   assert.deepEqual(error.suggestions, [
     "Use --takeover only when you intend to displace the current listener",
-    "Re-run: lavish-axi poll '/tmp/report.html' --takeover",
+    `Re-run: lavish-axi poll ${quoted} --takeover`,
   ]);
 });
 
 test("the takeover re-run command quotes a path with spaces", () => {
   const error = new AxiError("Lavish Editor already has an active poll listener", "LISTENER_ACTIVE", []);
   withTakeoverSuggestion(error, "/tmp/design review.html");
-  assert.deepEqual(error.suggestions, ["Re-run: lavish-axi poll '/tmp/design review.html' --takeover"]);
+  assert.deepEqual(error.suggestions, [
+    `Re-run: lavish-axi poll ${
+      process.platform === "win32" ? '"/tmp/design review.html"' : "'/tmp/design review.html'"
+    } --takeover`,
+  ]);
 
   const quoted = new AxiError("already listening", "LISTENER_ACTIVE", []);
   withTakeoverSuggestion(quoted, "/tmp/it's a report.html");
-  assert.deepEqual(quoted.suggestions, ["Re-run: lavish-axi poll '/tmp/it'\\''s a report.html' --takeover"]);
+  assert.deepEqual(quoted.suggestions, [
+    process.platform === "win32"
+      ? `Re-run: lavish-axi poll "/tmp/it's a report.html" --takeover`
+      : "Re-run: lavish-axi poll '/tmp/it'\\''s a report.html' --takeover",
+  ]);
+});
+
+test("on Windows the takeover re-run command uses cmd double quoting", () => {
+  const originalPlatform = process.platform;
+  Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+  try {
+    const error = new AxiError("already listening", "LISTENER_ACTIVE", []);
+    withTakeoverSuggestion(error, "C:\\work\\design review.html");
+    assert.deepEqual(error.suggestions, ['Re-run: lavish-axi poll "C:\\work\\design review.html" --takeover']);
+
+    const embedded = new AxiError("already listening", "LISTENER_ACTIVE", []);
+    withTakeoverSuggestion(embedded, 'C:\\temp\\re"port.html');
+    assert.deepEqual(embedded.suggestions, ['Re-run: lavish-axi poll "C:\\temp\\re""port.html" --takeover']);
+  } finally {
+    Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+  }
 });
 
 test("non-listener poll errors pass through without a takeover suggestion", () => {
