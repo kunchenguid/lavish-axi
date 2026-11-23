@@ -2377,7 +2377,13 @@ export async function acquireServerStartLock({ budgetMs = resolveStartupWaitMs()
     let holderFd;
     try {
       holderFd = openSync(lockPath, "r");
-    } catch {
+    } catch (error) {
+      if (error?.code !== "ENOENT") {
+        // An unreadable lock (EACCES, EISDIR, ...) would refuse every exclusive create too:
+        // wait like the live-holder branch instead of spinning on the create.
+        if (Date.now() >= deadline) return null;
+        await delay(delayMs);
+      }
       // The holder released between our refused create and this open; retry the create.
       continue;
     }
@@ -2416,7 +2422,13 @@ export async function acquireServerStartLock({ budgetMs = resolveStartupWaitMs()
         } finally {
           closeSync(breakFd);
         }
-      } catch {
+      } catch (error) {
+        if (error?.code !== "ENOENT") {
+          // An unlink we cannot clear (e.g. EPERM) would refuse every retry too: wait
+          // like the live-holder branch instead of spinning on the break.
+          if (Date.now() >= deadline) return null;
+          await delay(delayMs);
+        }
         // Released or replaced meanwhile; retry the exclusive create.
       }
       continue;

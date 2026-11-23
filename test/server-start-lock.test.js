@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -145,3 +145,28 @@ test("a release does not remove a same-inode lock whose recorded PID is no longe
     release();
   });
 });
+
+test(
+  "an unreadable start lock is waited out for the budget, not spun on",
+  { skip: process.platform === "win32" },
+  async () => {
+    await withStateDir(async () => {
+      // A lock no contender can read (EACCES on every open) must not turn the acquire loop
+      // into a synchronous hot spin: the waiter has to spend the startup budget instead.
+      await writeFile(serverStartLockPath(), String(process.pid));
+      await chmod(serverStartLockPath(), 0o000);
+      const previous = process.env.LAVISH_AXI_STARTUP_WAIT_MS;
+      process.env.LAVISH_AXI_STARTUP_WAIT_MS = "150";
+      try {
+        const started = Date.now();
+        const outcome = await acquireServerStartLock({ delayMs: 10 });
+        assert.equal(outcome, null, "an unreadable lock is never taken");
+        assert.ok(Date.now() - started >= 120, "the contender honored LAVISH_AXI_STARTUP_WAIT_MS instead of spinning");
+      } finally {
+        if (previous === undefined) delete process.env.LAVISH_AXI_STARTUP_WAIT_MS;
+        else process.env.LAVISH_AXI_STARTUP_WAIT_MS = previous;
+        await chmod(serverStartLockPath(), 0o600);
+      }
+    });
+  },
+);
