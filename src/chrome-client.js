@@ -200,6 +200,12 @@ let annotationOverridden = false;
 let annotationDefaultReceived = false;
 let ended = false;
 let agentPresence = "waiting";
+// A live-event socket that was open, dropped, and reconnected means the server behind this page
+// went away and something answered again. If the replacement then reports no listener, the
+// agent's poll died with the old server process; say that instead of the generic no-listener
+// line, which reads as if the agent deliberately stopped.
+let liveEventsEverOpened = false;
+let listenerLostInRestart = false;
 const layoutGateEnabled = sessionData.layoutGateEnabled !== false;
 const configuredLayoutGateMaxHoldMs = Number(sessionData.layoutGateMaxHoldMs);
 const layoutGateMaxHoldMs =
@@ -961,7 +967,11 @@ function receiptStepHtml(label, at) {
 // that will take the note within milliseconds, and `working` or an external listener is an agent
 // whose next poll will take it.
 function receiptNoteText() {
-  if (agentPresence === "waiting") return "No agent is listening";
+  if (agentPresence === "waiting") {
+    return listenerLostInRestart
+      ? "Agent listener lost in a server restart — it will re-attach on the agent's next poll"
+      : "No agent is listening";
+  }
   if (agentPresence === "listening") return "Delivering";
   return "Agent is busy; delivered on its next poll";
 }
@@ -1139,6 +1149,7 @@ function syncChat(chat, revision) {
 
 function setAgentPresence(state) {
   agentPresence = state === "listening" || state === "external" || state === "working" ? state : "waiting";
+  if (agentPresence !== "waiting") listenerLostInRestart = false;
   updateSendState();
   renderSheetSummary();
   refreshUnseenReceipts();
@@ -4768,6 +4779,9 @@ function connectLiveEvents() {
   socket.addEventListener("open", () => {
     eventReconnectDelayMs = 500;
     liveEventFailures = 0;
+    // A reconnect only implies a server restart if no durable signal says otherwise; a transient blip while the server stayed up can set this falsely, and a server-delivered session id is the durable future fix.
+    if (liveEventsEverOpened) listenerLostInRestart = true;
+    liveEventsEverOpened = true;
     unreachableDismissed = false;
     if (unreachableBannerOwned) {
       unreachableBannerOwned = false;

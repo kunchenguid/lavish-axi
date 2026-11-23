@@ -9067,6 +9067,52 @@ test("an unseen bubble's receipt names the live presence and re-renders when it 
   assert.equal(bubbles[1].innerHTML, seenHtml, "a seen bubble does not depend on presence");
 });
 
+test("after a live-socket drop and reconnect, a waiting receipt names the server restart", async () => {
+  const chrome = await createChromeHarness({
+    sessionData: {
+      ...defaultSessionData,
+      initialChat: [{ role: "user", kind: "message", text: "Waiting" }],
+    },
+  });
+  const bubbles = chrome.element("chatLog").children;
+
+  const first = chrome.webSocket();
+  first.protocolListeners.get("open")();
+  first.protocolListeners.get("close")();
+  chrome.runTimers(500);
+
+  const reconnected = chrome.webSocketAt(1);
+  reconnected.protocolListeners.get("open")();
+  const presence = (data) => reconnected.listeners.get("agent-presence")({ data: JSON.stringify(data) });
+
+  presence({ state: "waiting" });
+  assert.equal(
+    receiptNote(bubbles[0].innerHTML),
+    "Agent listener lost in a server restart — it will re-attach on the agent's next poll",
+  );
+  presence({ state: "listening", mode: "agent-listener" });
+  assert.equal(receiptNote(bubbles[0].innerHTML), "Delivering", "a re-attached listener replaces the restart note");
+  presence({ state: "waiting" });
+  assert.equal(
+    receiptNote(bubbles[0].innerHTML),
+    "No agent is listening",
+    "once a listener came back, a plain wait reads as one again",
+  );
+});
+
+test("a first-session wait without any reconnect still reads as no listener", async () => {
+  const chrome = await createChromeHarness({
+    sessionData: {
+      ...defaultSessionData,
+      initialChat: [{ role: "user", kind: "message", text: "Waiting" }],
+    },
+  });
+  const bubbles = chrome.element("chatLog").children;
+  chrome.webSocket().protocolListeners.get("open")();
+  chrome.eventSource().listeners.get("agent-presence")({ data: JSON.stringify({ state: "waiting" }) });
+  assert.equal(receiptNote(bubbles[0].innerHTML), "No agent is listening");
+});
+
 test("a presence change leaves an unseen bubble's expired image placeholder in place", async () => {
   const chrome = await createChromeHarness({
     sessionData: {

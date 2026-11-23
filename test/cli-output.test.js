@@ -38,6 +38,7 @@ import {
   herdrPollChimeEnabled,
   normalizeArgv,
   notifyHerdrPollReady,
+  withTakeoverSuggestion,
   resolveShareRequest,
   pollInterruptedText,
   pollWaitBannerText,
@@ -3716,4 +3717,64 @@ test("design output owns the library icon directive and the diagram playbook poi
   assert.match(diagram, /whiteboard_tooling\.library_icons/);
   assert.doesNotMatch(diagram, /%% lavish-icon/, "the syntax has one owner surface");
   assert.doesNotMatch(JSON.stringify(createHomeOutput({ bin: "lavish-axi", sessions: [] })), /lavish-icon|libraries/);
+});
+
+test("a LISTENER_ACTIVE poll error gains the literal --takeover re-run command", () => {
+  const error = new AxiError(
+    "Lavish Editor already has an active poll listener (current listener: worker-7; active for 5012ms)",
+    "LISTENER_ACTIVE",
+    ["Use --takeover only when you intend to displace the current listener"],
+  );
+  withTakeoverSuggestion(error, "/tmp/report.html");
+  const quoted = process.platform === "win32" ? '"/tmp/report.html"' : "'/tmp/report.html'";
+  assert.deepEqual(error.suggestions, [
+    "Use --takeover only when you intend to displace the current listener",
+    `Re-run: lavish-axi poll ${quoted} --takeover`,
+  ]);
+});
+
+test("the takeover re-run command quotes a path with spaces", () => {
+  const error = new AxiError("Lavish Editor already has an active poll listener", "LISTENER_ACTIVE", []);
+  withTakeoverSuggestion(error, "/tmp/design review.html");
+  assert.deepEqual(error.suggestions, [
+    `Re-run: lavish-axi poll ${
+      process.platform === "win32" ? '"/tmp/design review.html"' : "'/tmp/design review.html'"
+    } --takeover`,
+  ]);
+
+  const quoted = new AxiError("already listening", "LISTENER_ACTIVE", []);
+  withTakeoverSuggestion(quoted, "/tmp/it's a report.html");
+  assert.deepEqual(quoted.suggestions, [
+    process.platform === "win32"
+      ? `Re-run: lavish-axi poll "/tmp/it's a report.html" --takeover`
+      : "Re-run: lavish-axi poll '/tmp/it'\\''s a report.html' --takeover",
+  ]);
+});
+
+test("on Windows the takeover re-run command uses cmd double quoting", () => {
+  const originalPlatform = process.platform;
+  Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+  try {
+    const error = new AxiError("already listening", "LISTENER_ACTIVE", []);
+    withTakeoverSuggestion(error, "C:\\work\\design review.html");
+    assert.deepEqual(error.suggestions, ['Re-run: lavish-axi poll "C:\\work\\design review.html" --takeover']);
+
+    const embedded = new AxiError("already listening", "LISTENER_ACTIVE", []);
+    withTakeoverSuggestion(embedded, 'C:\\temp\\re"port.html');
+    assert.deepEqual(embedded.suggestions, ['Re-run: lavish-axi poll "C:\\temp\\re""port.html" --takeover']);
+  } finally {
+    Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+  }
+});
+
+test("non-listener poll errors pass through without a takeover suggestion", () => {
+  const plain = new AxiError("Lavish Editor request failed: 500", "SERVER_ERROR", ["retry later"]);
+  withTakeoverSuggestion(plain, "/tmp/report.html");
+  assert.deepEqual(plain.suggestions, ["retry later"]);
+
+  const bare = new AxiError("Lavish Editor request failed: 500", "SERVER_ERROR");
+  assert.equal(withTakeoverSuggestion(bare, "/tmp/report.html"), bare);
+  assert.deepEqual(bare.suggestions, []);
+
+  assert.equal(withTakeoverSuggestion(null, "/tmp/report.html"), null);
 });

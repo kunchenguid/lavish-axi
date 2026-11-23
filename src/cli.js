@@ -4,9 +4,12 @@ import {
   createReadStream,
   existsSync,
   mkdirSync,
+  fstatSync,
   openSync,
   readFileSync,
   realpathSync,
+  statSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { access, readFile, writeFile } from "node:fs/promises";
@@ -480,15 +483,20 @@ async function pollCommand(args) {
             body: JSON.stringify(agentReply ? { agent_reply: agentReply } : {}),
           }
         : {};
-    const response = await fetchJson(`${baseUrl}/api/poll?${query}`, {
-      ...request,
-      // Poll ownership is claimed before the response is available. Retrying a transport failure
-      // can leave the first claim alive and make the retry reject itself as LISTENER_ACTIVE.
-      retries: 0,
-      onResponse: (pollResponse) => {
-        if (pollResponse.headers.get(POLL_STATE_HEADER) === "listening") notifyHerdrPollReady();
-      },
-    });
+    let response;
+    try {
+      response = await fetchJson(`${baseUrl}/api/poll?${query}`, {
+        ...request,
+        // Poll ownership is claimed before the response is available. Retrying a transport failure
+        // can leave the first claim alive and make the retry reject itself as LISTENER_ACTIVE.
+        retries: 0,
+        onResponse: (pollResponse) => {
+          if (pollResponse.headers.get(POLL_STATE_HEADER) === "listening") notifyHerdrPollReady();
+        },
+      });
+    } catch (error) {
+      throw withTakeoverSuggestion(error, absolute);
+    }
     if (response.code === "LISTENER_REPLACED") {
       throw new AxiError("Lavish Editor poll listener was replaced by a takeover", "LISTENER_REPLACED", [
         `Re-run lavish-axi poll ${absolute} only if you intend to take over listening`,
@@ -505,6 +513,28 @@ async function pollCommand(args) {
 }
 
 const REPLY_VALUE_FLAGS = ["--agent-reply", "--agent-reply-file"];
+
+// Single-quote a value for a POSIX shell so a copy-paste command survives spaces and quotes.
+function shellSingleQuote(value) {
+  return `'${String(value).replaceAll("'", `'\\''`)}'`;
+}
+
+// Double-quote a value for Windows cmd, which does not treat POSIX single quotes as quoting.
+function shellDoubleQuote(value) {
+  return `"${String(value).replaceAll('"', '""')}"`;
+}
+
+// LISTENER_ACTIVE already carries the holder's label and age; the actionable suggestion used to
+// be generic. Append the literal recovery command for this file so the agent can copy-paste it.
+export function withTakeoverSuggestion(error, absolute) {
+  if (error?.code === "LISTENER_ACTIVE") {
+    // Quote for the shell that will run the pasted command: cmd.exe keeps POSIX single
+    // quotes in the filename, so Windows gets a double-quoted form.
+    const quoted = process.platform === "win32" ? shellDoubleQuote(absolute) : shellSingleQuote(absolute);
+    error.suggestions = [...(error.suggestions || []), `Re-run: lavish-axi poll ${quoted} --takeover`];
+  }
+  return error;
+}
 const REPLY_TOO_LARGE_HELP = "Shorten the reply, then retry `lavish-axi reply <html-file>`";
 
 async function replyCommand(args) {
@@ -1977,7 +2007,12 @@ async function ensureServer({ forceRestart = false, reloadKey = "" } = {}) {
       }
     }
   }
-  await startServer(port, { alsoListen });
+  // One startup deadline governs the whole cold start: the post-spawn probe inside
+  // startServerOnce and the loop below draw from the same budget instead of each taking a full
+  // LAVISH_AXI_STARTUP_WAIT_MS.
+  const startupWaitMs = resolveStartupWaitMs();
+  const startupDeadline = Date.now() + startupWaitMs;
+  await startServerOnce(port, { alsoListen, probeBudgetMs: startupDeadline - Date.now() });
   const replacedForNetwork =
     Boolean(existing) &&
     existing.app === "lavish-axi" &&
@@ -1987,7 +2022,7 @@ async function ensureServer({ forceRestart = false, reloadKey = "" } = {}) {
     !isServerOlderThanCli(VERSION, existing.version);
   let networkRestarted = replacedForNetwork;
   let raceRestarted = false;
-  let deadline = Date.now() + 5000;
+  let deadline = startupDeadline;
   while (Date.now() < deadline) {
     const {
       baseUrl: liveUrl,
@@ -2018,7 +2053,7 @@ async function ensureServer({ forceRestart = false, reloadKey = "" } = {}) {
       await requestShutdown(liveUrl, { reloadKey, reason: serverReplacementReason(VERSION, health) });
       if (!(await waitForPortFree(liveUrl, 3000))) break;
       await startServer(port, { alsoListen });
-      deadline = Date.now() + 5000;
+      deadline = Date.now() + startupWaitMs;
       continue;
     }
     if (health?.network_stale === true && health.app === "lavish-axi") {
@@ -2031,12 +2066,32 @@ async function ensureServer({ forceRestart = false, reloadKey = "" } = {}) {
       if (!(await waitForPortFree(liveUrl, 3000))) break;
       await startServer(port, { alsoListen });
       networkRestarted = true;
-      deadline = Date.now() + 5000;
+      deadline = Date.now() + startupWaitMs;
       continue;
     }
     await delay(100);
   }
   if (unidentified) throw unidentifiedListenerError(unidentified);
+  // startServerOnce can return having found a healthy server right at the deadline, so the
+  // wait loop above never runs. Re-check once before reporting failure: a running server is
+  // never a did-not-start error.
+  {
+    const {
+      baseUrl: finalUrl,
+      health: finalHealth,
+      duplicates: finalDuplicates,
+      foreign: finalForeign,
+    } = await findRunningServer(port, { reconcileNetwork: true });
+    if (finalForeign) throw otherInstallationError(port, finalForeign);
+    const finalMissing =
+      finalHealth?.app === "lavish-axi"
+        ? missingServerHosts(finalHealth, hostsToServe(requiredHosts, finalDuplicates))
+        : [];
+    if (finalHealth && !shouldRestartServer(VERSION, finalHealth) && finalMissing.length === 0) {
+      return adoptServer(finalUrl, finalDuplicates, reloadKey);
+    }
+    if (finalMissing.length > 0) throw missingHostsError(port, finalMissing);
+  }
   throw new AxiError("Lavish Editor server did not start", "SERVER_ERROR", [
     `Run \`lavish-axi server --port ${port}\` to inspect server startup`,
   ]);
@@ -2048,6 +2103,19 @@ function missingHostsError(port, missingHosts) {
     "SERVER_ERROR",
     ["Run `lavish-axi stop`, then retry"],
   );
+}
+
+// How long ensureServer keeps probing for a healthy server after spawning one before it gives up.
+// On a loaded machine a cold node boot plus bind plus first probe can outrun a short deadline and
+// fail a command whose server comes up healthy moments later, so the default is generous. Set
+// LAVISH_AXI_STARTUP_WAIT_MS to a custom millisecond budget.
+export const DEFAULT_STARTUP_WAIT_MS = 15000;
+export function resolveStartupWaitMs(env = process.env) {
+  const raw = env.LAVISH_AXI_STARTUP_WAIT_MS?.trim();
+  if (raw === undefined || raw === "") return DEFAULT_STARTUP_WAIT_MS;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) return DEFAULT_STARTUP_WAIT_MS;
+  return Math.min(value, 2147483647);
 }
 
 // Pure helper so the upgrade-detection logic is unit-testable without spinning up HTTP.
@@ -2244,6 +2312,154 @@ function unidentifiedListenerError(baseUrl) {
     "SERVER_ERROR",
     [`Stop the process listening on ${host} yourself, or set LAVISH_AXI_PORT to another port`],
   );
+}
+
+// Concurrent first-starts: when the shared server is down and N fleet boards re-arm at once,
+// every CLI spawns its own detached child; the losers exit on the port lock, but their cold
+// boots race the winner's for CPU and can push every caller past its startup deadline. A
+// state-dir lockfile lets one caller spawn while the others wait, then find the winner's server
+// healthy and skip their own spawn. A contender that cannot take the lock within the startup
+// budget spawns anyway: a redundant child is harmless, a missing server is not.
+export function serverStartLockPath() {
+  return path.join(stateDir(), "server-start.lock");
+}
+
+function holderProcessAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === "EPERM";
+  }
+}
+
+// Returns a release function that removes the lock, or null when the budget elapsed with a live
+// holder still holding it. A lock whose recorded PID is gone (crashed CLI) is broken in place so
+// the next contender can take it.
+export async function acquireServerStartLock({ budgetMs = resolveStartupWaitMs(), delayMs = 50 } = {}) {
+  await ensureStateDir();
+  const lockPath = serverStartLockPath();
+  const deadline = Date.now() + budgetMs;
+  let ownIno = null;
+  let ownDev = null;
+  for (;;) {
+    try {
+      writeFileSync(lockPath, String(process.pid), { flag: "wx" });
+      try {
+        const stat = statSync(lockPath);
+        ownIno = stat.ino;
+        ownDev = stat.dev;
+      } catch {
+        ownIno = null;
+        ownDev = null;
+      }
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        try {
+          // Remove only the file we created: if a contender broke our stale lock and took
+          // over, the path now names its lock (different inode or different PID) and must
+          // survive.
+          if (ownIno !== null) {
+            const stat = statSync(lockPath);
+            if (stat.ino !== ownIno || stat.dev !== ownDev) return;
+            if (readFileSync(lockPath, "utf8").trim() !== String(process.pid)) return;
+          }
+          unlinkSync(lockPath);
+        } catch {
+          // A missing or replaced lock file is still a released lock.
+        }
+      };
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+    }
+    let holderFd;
+    try {
+      holderFd = openSync(lockPath, "r");
+    } catch (error) {
+      if (error?.code !== "ENOENT") {
+        // An unreadable lock (EACCES, EISDIR, ...) would refuse every exclusive create too:
+        // wait like the live-holder branch instead of spinning on the create.
+        if (Date.now() >= deadline) return null;
+        await delay(delayMs);
+      }
+      // The holder released between our refused create and this open; retry the create.
+      continue;
+    }
+    let stale = false;
+    let holderStat;
+    try {
+      // Read and judge through one open handle, then confirm the path still names that same
+      // file before breaking it, so a contender's replacement is never mistaken for the
+      // content we judged stale.
+      holderStat = fstatSync(holderFd);
+      const raw = readFileSync(holderFd, "utf8").trim();
+      const holderPid = Number(raw);
+      if (raw === "") {
+        // A lock between create and its PID write looks empty: not ours to break, or two
+        // callers could both remove and spawn.
+      } else if (Number.isInteger(holderPid) && holderPid > 0) {
+        if (holderPid === process.pid || !holderProcessAlive(holderPid)) {
+          stale = true;
+        }
+      } else {
+        stale = true;
+      }
+    } finally {
+      closeSync(holderFd);
+    }
+    if (stale && holderStat) {
+      // Re-open and re-check the inode immediately before unlinking: between our read and
+      // this open a contender may have replaced the file, and its fresh lock must survive.
+      try {
+        const breakFd = openSync(lockPath, "r");
+        try {
+          const breakStat = fstatSync(breakFd);
+          if (breakStat.dev === holderStat.dev && breakStat.ino === holderStat.ino) {
+            unlinkSync(lockPath);
+          }
+        } finally {
+          closeSync(breakFd);
+        }
+      } catch (error) {
+        if (error?.code !== "ENOENT") {
+          // An unlink we cannot clear (e.g. EPERM) would refuse every retry too: wait
+          // like the live-holder branch instead of spinning on the break.
+          if (Date.now() >= deadline) return null;
+          await delay(delayMs);
+        }
+        // Released or replaced meanwhile; retry the exclusive create.
+      }
+      continue;
+    }
+    // A live PID or a lock still between create and PID write is not ours to break: wait.
+    if (Date.now() >= deadline) return null;
+    await delay(delayMs);
+  }
+}
+
+// The cold-start path of ensureServer. Replacement restarts (race/network-stale) keep calling
+// startServer directly: their port handoff is already serialized by the shutdown handshake.
+async function startServerOnce(port, { alsoListen, probeBudgetMs }) {
+  const release = await acquireServerStartLock();
+  try {
+    const existing = await findRunningServer(port);
+    if (existing.foreign || existing.health?.app === "lavish-axi") return;
+    await startServer(port, { alsoListen });
+    // Hold the lock while the spawned server boots so the next contender's re-check sees it
+    // healthy instead of spawning a redundant child of its own. The probe budget is carved out
+    // of the caller's single startup deadline so LAVISH_AXI_STARTUP_WAIT_MS bounds the whole
+    // cold start once, not once per waiting layer.
+    const deadline = Date.now() + Math.max(0, probeBudgetMs);
+    while (Date.now() < deadline) {
+      const live = await findRunningServer(port);
+      if (live.foreign || live.health?.app === "lavish-axi") return;
+      await delay(100);
+    }
+  } finally {
+    release?.();
+  }
 }
 
 async function startServer(port, { alsoListen = [] } = {}) {
@@ -2647,7 +2863,7 @@ function createTopLevelHelp({ agent = "generic" } = {}) {
 function createCommandHelp({ agent = "generic" } = {}) {
   return {
     open: `Usage: lavish-axi <html-file> [--no-open] [--no-gate] [--reopen]\n\nOpen or resume a Lavish Editor review session for an HTML artifact. Use --no-open when you need to ensure the server/session exists without opening another browser window. Use --no-gate to skip the open-time layout curtain for this browser open. If the user explicitly ended the session from the browser, this refuses to reopen it and returns guidance instead - pass --reopen to force it open when the user asks for further review or something important needs their visual attention. Sessions ended by the agent (\`lavish-axi end\`) reopen normally without the flag.\n`,
-    poll: `Usage: lavish-axi poll <html-file> [--owner <label>] [--takeover] [--agent-reply "..."] [--agent-reply-file <path>]\n\nThis command exclusively long-polls for queued user prompts. Pass --owner <label> to make the active listener visible in session listings; --takeover displaces an existing listener, which receives LISTENER_REPLACED. A second poll without --takeover fails with LISTENER_ACTIVE instead of silently returning waiting.\n\nThis command long-polls indefinitely for queued user prompts. It stays silent while it waits - that is normal, never kill it. Browser-detected layout issues do NOT return this poll: they are filed passively in the user's Layout issues inbox and arrive as an ordinary tag "layout-warnings" prompt only after the user selects them and queues the fixes. Warning lifecycle: an issue stays unresolved and counted while queued, becomes recurring if a newer artifact revision still shows it, and is resolved only after a newer artifact load plus a complete diagnostic pass at the same viewport no longer detects it. A failed or incomplete pass preserves it as unverified rather than clearing it. The only response that arrives without user action is artifact_failures - a fatal failure that made the review surface itself unusable. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. In a Herdr-managed pane, set LAVISH_AXI_HERDR_CHIME=1 to request attention when the poll has entered its waiting state; unset it or use any other value to keep the current silent behavior. Notification failures never interrupt the poll. ${pollExecutionGuidance({ agent })} Use --agent-reply after applying prior feedback to display a concise response in Lavish Editor before waiting again. When you are handing a result back and are not about to long-poll, run \`lavish-axi reply <html-file> --agent-reply "..."\` instead: that command exits 0 only after the server accepts the reply, so the board stops showing Working without this poll staying open. ${POLL_AGENT_REPLY_RULE} ${POLL_AGENT_REPLY_HELP_POINTER} Do not combine --agent-reply with --agent-reply-file.\n\nExamples:\n  lavish-axi poll report.html --agent-reply "Renamed the payment step."\n  lavish-axi poll report.html --agent-reply-file reply.md\n  lavish-axi poll report.html --agent-reply-file -\n\n${POLL_SEND_AND_END_RULE}\n`,
+    poll: `Usage: lavish-axi poll <html-file> [--owner <label>] [--takeover] [--agent-reply "..."] [--agent-reply-file <path>]\n\nThis command exclusively long-polls for queued user prompts. Pass --owner <label> to make the active listener visible in session listings; --takeover displaces an existing listener, which receives LISTENER_REPLACED. A second poll without --takeover fails with LISTENER_ACTIVE instead of silently returning waiting, unless the registered holder's response socket is provably dead, in which case its ownership is released and the newcomer is admitted.\n\nThis command long-polls indefinitely for queued user prompts. It stays silent while it waits - that is normal, never kill it. Browser-detected layout issues do NOT return this poll: they are filed passively in the user's Layout issues inbox and arrive as an ordinary tag "layout-warnings" prompt only after the user selects them and queues the fixes. Warning lifecycle: an issue stays unresolved and counted while queued, becomes recurring if a newer artifact revision still shows it, and is resolved only after a newer artifact load plus a complete diagnostic pass at the same viewport no longer detects it. A failed or incomplete pass preserves it as unverified rather than clearing it. The only response that arrives without user action is artifact_failures - a fatal failure that made the review surface itself unusable. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. In a Herdr-managed pane, set LAVISH_AXI_HERDR_CHIME=1 to request attention when the poll has entered its waiting state; unset it or use any other value to keep the current silent behavior. Notification failures never interrupt the poll. ${pollExecutionGuidance({ agent })} Use --agent-reply after applying prior feedback to display a concise response in Lavish Editor before waiting again. When you are handing a result back and are not about to long-poll, run \`lavish-axi reply <html-file> --agent-reply "..."\` instead: that command exits 0 only after the server accepts the reply, so the board stops showing Working without this poll staying open. ${POLL_AGENT_REPLY_RULE} ${POLL_AGENT_REPLY_HELP_POINTER} Do not combine --agent-reply with --agent-reply-file.\n\nExamples:\n  lavish-axi poll report.html --agent-reply "Renamed the payment step."\n  lavish-axi poll report.html --agent-reply-file reply.md\n  lavish-axi poll report.html --agent-reply-file -\n\n${POLL_SEND_AND_END_RULE}\n`,
     reply: `Usage: lavish-axi reply <html-file> (--agent-reply "..." | --agent-reply-file <path>)\n\nPost an agent reply to the open Lavish Editor session and exit once the server confirms it was accepted. Exit 0 only when the server answers that the reply was sent, which is when the board stops showing Working. If that answer does not arrive within ${AGENT_REPLY_RECEIPT_TIMEOUT_MS / 1000} seconds, exit non-zero with a timeout error. Use this when you are handing a result back and are not about to wait for more feedback. A reply also marks every note the poll delivered to you as Done in the reviewer's panel, so reply once you have handled them.\n\nUse \`lavish-axi poll <html-file> --agent-reply "..."\` instead when the reply should be followed by a long-poll. That command posts the reply and then keeps waiting, so it does not exit when the reply is accepted.\n\nPass exactly one of --agent-reply or --agent-reply-file. ${POLL_AGENT_REPLY_RULE} ${POLL_AGENT_REPLY_HELP_POINTER} Do not combine the two flags. An empty reply is refused.\n\nExamples:\n  lavish-axi reply report.html --agent-reply "Renamed the payment step."\n  lavish-axi reply report.html --agent-reply-file reply.md\n  lavish-axi reply report.html --agent-reply-file -\n`,
     end: `Usage: lavish-axi end <html-file>\n\nEnd a Lavish Editor session as the agent. A session ended this way still reopens normally on the next \`lavish-axi <html-file>\`, unlike a user ending it from the browser, which requires --reopen.\n`,
     export: `Usage: lavish-axi export <html-file> [--out <path>]\n\nWrite a portable copy of an artifact: one HTML file with its LOCAL assets inlined (relative-path stylesheets, scripts, images, and fonts become inline <style>/<script> blocks and data URIs). Remote CDN/font references (https URLs) are left as links for the browser to load, so the file needs network to render those. Lavish makes no outbound requests - it only reads local files, confined to the artifact's directory. Defaults to writing <name>.export.html next to the source; pass --out to choose a path. The Lavish annotation SDK is never included in an export.\n`,

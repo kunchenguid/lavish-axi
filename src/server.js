@@ -938,9 +938,24 @@ export async function serve({
         return;
       }
       const { holder, previousPresence, conflict, missing } = await pollOwnershipLock.runExclusive(async () => {
-        const currentHolder = activePolls.get(key);
-        if (currentHolder && !takeover) return { conflict: listenerConflict(currentHolder, "LISTENER_ACTIVE") };
-        const nextHolder = { key, owner, startedAt: Date.now(), replaced: false, replace: null };
+        let currentHolder = activePolls.get(key);
+        if (currentHolder && !takeover) {
+          // A registered holder whose response socket is provably dead cannot be listening: its
+          // client vanished without the server observing the disconnect. Release it and admit the
+          // newcomer so the common crash shape does not need a manual --takeover; a live holder
+          // still refuses.
+          if (!pollHolderResponseDead(currentHolder)) {
+            return { conflict: listenerConflict(currentHolder, "LISTENER_ACTIVE") };
+          }
+          releasePollListener(currentHolder, activePolls, deliveredFeedback, events);
+          // Its response cleanup never ran, so its respond callbacks are still armed. Mark it
+          // replaced and retire it now: any in-flight respond restores the feedback instead of
+          // delivering it, and no late event can write to the dead socket.
+          currentHolder.replaced = true;
+          currentHolder.replace?.();
+          currentHolder = activePolls.get(key);
+        }
+        const nextHolder = { key, owner, startedAt: Date.now(), replaced: false, replace: null, res };
         claimedHolder = nextHolder;
         const priorPresence = presenceSignature(key, activePolls, deliveredFeedback);
         if (currentHolder) {
@@ -1053,7 +1068,7 @@ export async function serve({
       };
       holder.replace = respondReplacement;
       const respond = async (forcedResult = null) => {
-        if (responding || res.writableEnded) return;
+        if (responding || res.writableEnded || res.destroyed) return;
         responding = true;
         let finalSessionEnded = false;
         try {
@@ -1062,7 +1077,9 @@ export async function serve({
           // is only the non-terminal replacement for a poll that would otherwise keep waiting.
           const responseResult = forcedResult && result.status === "waiting" ? forcedResult : result;
           finalSessionEnded = responseResult?.session_ended === true;
-          if (holder.replaced) {
+          // Replaced or no longer the registered holder: the feedback was taken but belongs to
+          // the current listener, so restore it instead of delivering to a dead response.
+          if (holder.replaced || activePolls.get(key) !== holder) {
             if (responseResult.status !== "waiting") await restoreClosedFeedback(key, responseResult);
             if (!requestClosed && !res.writableEnded) {
               if (streamHeartbeat) res.end(JSON.stringify(listenerConflict(holder, "LISTENER_REPLACED")));
@@ -1070,7 +1087,7 @@ export async function serve({
             }
             return;
           }
-          if (requestClosed || res.writableEnded) {
+          if (requestClosed || res.writableEnded || res.destroyed) {
             await restoreClosedFeedback(key, responseResult);
             return;
           }
@@ -1095,13 +1112,13 @@ export async function serve({
         next(error);
       }
       const onFeedback = (changedKey) => {
-        if (changedKey !== key || res.writableEnded) {
+        if (changedKey !== key || res.writableEnded || res.destroyed) {
           return;
         }
         respond().catch(handleRespondError);
       };
       const onBrowserDisconnected = (changedKey) => {
-        if (changedKey !== key || res.writableEnded) return;
+        if (changedKey !== key || res.writableEnded || res.destroyed) return;
         respond({ status: "browser_disconnected" }).catch(handleRespondError);
       };
       events.on("feedback", onFeedback);
@@ -2787,6 +2804,17 @@ export function hasLiveReloadRootOptIn(html) {
   const searchableHtml = html.replace(/<!--[\s\S]*?-->/g, "");
   if (/<html\b[^>]*\sdata-lavish-live-reload-root(?:[\s=>/]|$)[^>]*>/i.test(searchableHtml)) return true;
   return /<meta\b(?=[^>]*name=["']lavish-live-reload["'])(?=[^>]*content=["']root["'])[^>]*>/i.test(searchableHtml);
+}
+
+// Whether a registered poll holder's response is provably dead: the response or its socket was
+// destroyed, or the response already ended while the holder still sits in activePolls. Holders
+// that are merely quiet (a hung client that keeps its socket open) are NOT dead - ownership
+// stays with them until they disconnect or are taken over. Holders predating the `res` field
+// report not dead and keep the manual --takeover path.
+export function pollHolderResponseDead(holder) {
+  const res = holder?.res;
+  if (!res) return false;
+  return res.destroyed || res.writableEnded || Boolean(res.socket?.destroyed);
 }
 
 function releasePollListener(holder, activePolls, deliveredFeedback, events) {
