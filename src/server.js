@@ -65,6 +65,7 @@ import {
   IPV6_LOOPBACK_HOST,
   isWildcardHost,
   LOOPBACK_HOST,
+  publicOrigin,
   resolveConcreteListenHosts,
   resolveLinkHost,
   resolveListenHosts,
@@ -311,9 +312,11 @@ export async function serve({
   bindRecoveryDelaysMs = BIND_RECOVERY_DELAYS_MS,
   whiteboardAssetsDir = defaultWhiteboardAssetsDir(),
 } = {}) {
+  const publicUrl = publicOrigin(env);
+  const publicHostname = publicUrl ? hostnameFromHostHeader(new URL(publicUrl).host) : null;
   // Keep the transport dependency off fast metadata paths such as `--version`.
   const { WebSocket, WebSocketServer } = await import("ws");
-  const extraHosts = allowedHosts ?? extraAllowedHosts(env);
+  const extraHosts = [...(allowedHosts ?? extraAllowedHosts(env)), ...(publicHostname ? [publicHostname] : [])];
   const envHost = env.LAVISH_AXI_HOST?.trim();
   const autoTailscale = !envHost;
   const detect = detectTailscaleFn === undefined ? detectTailscale : detectTailscaleFn;
@@ -663,8 +666,12 @@ export async function serve({
   });
   const allowAnyHostname = allowsAllHosts(extraHosts);
 
+  function linkOrigin() {
+    return publicUrl ?? `http://${hostForUrl(resolvedLinkHost)}:${publicPort}`;
+  }
+
   function workingUrlFor(req, { includeSessionPath = true } = {}) {
-    const origin = `http://${hostForUrl(resolvedLinkHost)}:${publicPort}`;
+    const origin = linkOrigin();
     if (includeSessionPath && typeof req.path === "string" && req.path.startsWith("/session/")) {
       return `${origin}${req.path}`;
     }
@@ -820,7 +827,7 @@ export async function serve({
       const key = sessionKey(file);
       const reopen = Boolean(req.body.reopen);
       const existing = await store.findByKey(key);
-      const sessionUrl = `http://${hostForUrl(resolvedLinkHost)}:${publicPort}/session/${key}`;
+      const sessionUrl = `${linkOrigin()}/session/${key}`;
       // A user-initiated end (ending or send-and-ending from the browser) means the human
       // deliberately closed the review surface. Silently reopening it on the next
       // `lavish-axi <file>` is the exact behavior this route exists to prevent - require an

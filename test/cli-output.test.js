@@ -992,6 +992,34 @@ test("export output separates unresolved assets from notices", () => {
   assert.equal(output.warnings.length, 3);
 });
 
+test("open reports an invalid LAVISH_AXI_PUBLIC_URL before starting the server", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "lavish-public-url-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body>review</body></html>");
+  try {
+    const result = spawnSync(
+      process.execPath,
+      [fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url)), artifact, "--no-open"],
+      {
+        env: {
+          ...process.env,
+          LAVISH_AXI_STATE_DIR: dir,
+          LAVISH_AXI_TELEMETRY: "0",
+          LAVISH_AXI_PORT: "0",
+          LAVISH_AXI_PUBLIC_URL: "https://lavish.example.test/sub",
+        },
+        encoding: "utf8",
+        timeout: 10_000,
+      },
+    );
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stdout, /LAVISH_AXI_PUBLIC_URL must be an http\(s\) origin/);
+    assert.equal(existsSync(path.join(dir, "server.log")), false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("export command writes a portable HTML file next to the artifact", async () => {
   const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-export-test-`);
   const artifact = `${dir}/report.html`;

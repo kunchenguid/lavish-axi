@@ -1632,6 +1632,117 @@ test("session URLs use the configured linkHost while binding to loopback", async
   }
 });
 
+test("LAVISH_AXI_PUBLIC_URL overrides link-host and MagicDNS at both link-building sites", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-public-url-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body>review</body></html>");
+  try {
+    for (const tailscale of [null, { ipv4: "127.0.0.1", magicDnsName: "review.example.ts.net" }]) {
+      const server = await serve({
+        port: 0,
+        stateFile: path.join(dir, "state.json"),
+        env: { LAVISH_AXI_PUBLIC_URL: "https://lavish.example.test:8443", LAVISH_AXI_LINK_HOST: "link.example.test" },
+        detectTailscale: async () => tailscale,
+        idleTimeoutMs: null,
+      });
+      try {
+        assert.deepEqual(
+          server.addresses.map(({ address }) => address),
+          ["127.0.0.1"],
+        );
+        const opened = await rawRequest(server.port, "/api/sessions", {
+          method: "POST",
+          body: JSON.stringify({ file: artifact, noGate: true }),
+        });
+        assert.equal(opened.status, 200);
+        const { key, url } = JSON.parse(opened.body);
+        assert.equal(url, `https://lavish.example.test:8443/session/${key}?no-gate=1`);
+        const stored = await new SessionStore(path.join(dir, "state.json")).findByKey(key);
+        assert.equal(stored.url, `https://lavish.example.test:8443/session/${key}`);
+        const missing = await rawRequest(server.port, "/session/missing", { headers: { accept: "text/html" } });
+        assert.equal(missing.status, 404);
+        assert.ok(missing.body.includes('href="https://lavish.example.test:8443/"'));
+        const denied = await rawRequest(server.port, `/session/${key}`, {
+          host: "evil.example.test",
+          headers: { accept: "text/html" },
+        });
+        assert.equal(denied.status, 403);
+        assert.ok(denied.body.includes(`href="https://lavish.example.test:8443/session/${key}"`));
+      } finally {
+        await server.close();
+      }
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("an invalid LAVISH_AXI_PUBLIC_URL fails before binding", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-public-url-"));
+  try {
+    await assert.rejects(async () => {
+      const server = await serve({
+        port: 0,
+        stateFile: path.join(dir, "state.json"),
+        env: { LAVISH_AXI_HOST: "127.0.0.1", LAVISH_AXI_PUBLIC_URL: "https://lavish.example.test/sub" },
+      });
+      await server.close();
+    }, /LAVISH_AXI_PUBLIC_URL must be an http\(s\) origin/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("LAVISH_AXI_PUBLIC_URL auto-allows its host without weakening the same-origin guard", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-public-url-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body>review</body></html>");
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    env: { LAVISH_AXI_HOST: "127.0.0.1", LAVISH_AXI_PUBLIC_URL: "https://lavish.example.test:8443" },
+    idleTimeoutMs: null,
+  });
+  try {
+    const opened = await rawRequest(server.port, "/api/sessions", {
+      method: "POST",
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = JSON.parse(opened.body);
+    assert.equal((await rawRequest(server.port, `/session/${key}`, { host: "lavish.example.test:8443" })).status, 200);
+    assert.equal((await rawRequest(server.port, "/health", { host: "evil.example.test" })).status, 403);
+    const headers = { origin: "https://lavish.example.test:8443" };
+    const body = JSON.stringify({ prompts: [{ prompt: "proxy feedback", tag: "message" }] });
+    assert.equal(
+      (
+        await rawRequest(server.port, `/api/${key}/prompts`, {
+          method: "POST",
+          host: "lavish.example.test:8443",
+          headers,
+          body,
+        })
+      ).status,
+      403,
+    );
+    headers["x-forwarded-host"] = "lavish.example.test:8443";
+    headers["x-forwarded-proto"] = "https";
+    assert.equal((await rawRequest(server.port, `/api/${key}/prompts`, { method: "POST", headers, body })).status, 200);
+    assert.equal(
+      (
+        await rawRequest(server.port, `/api/${key}/prompts`, {
+          method: "POST",
+          headers: { ...headers, origin: "https://evil.example.test" },
+          body,
+        })
+      ).status,
+      403,
+    );
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("session URLs can disable the layout gate for one open", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const artifact = path.join(dir, "artifact.html");
