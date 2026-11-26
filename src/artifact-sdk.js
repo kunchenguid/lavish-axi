@@ -522,6 +522,8 @@ export function createArtifactSdk(
   // The controller for the currently open card, so upload results routed from the
   // chrome reach the right chips. Only one card is ever open at a time.
   let activeAttachments = null;
+  // Detaches the open card's viewport listener; replaced by every card and reset by closeCard.
+  let releaseCardViewport = () => {};
 
   // A clean, self-contained close glyph: the SVG path is inlined directly (no
   // <use>/sprite/symbol/CSS-mask reference), so it paints inside the sandboxed
@@ -2306,6 +2308,8 @@ export function createArtifactSdk(
   function closeCard() {
     const hadCard = activeCardContext !== null;
     activeCardContext = null;
+    releaseCardViewport();
+    releaseCardViewport = () => {};
     if (activeAttachments) {
       activeAttachments.destroy();
       activeAttachments = null;
@@ -2345,7 +2349,9 @@ export function createArtifactSdk(
       highlightElement(selected);
     }
 
-    const rect = options.range ? options.range.getBoundingClientRect() : anchor.getBoundingClientRect();
+    const measureAnchor = () =>
+      options.range ? options.range.getBoundingClientRect() : anchor.getBoundingClientRect();
+    let rect = measureAnchor();
     const card = document.createElement("div");
     card.className = "lavish-annotation-card";
     const nodeLabel = c.tag === "mermaid-node" ? c.target?.label || c.text || "" : "";
@@ -2395,8 +2401,8 @@ export function createArtifactSdk(
 
     // Clamp the card fully inside the viewport. Called again whenever its height
     // changes (attachment chip rows are added/removed) so a grown card never pushes
-    // its Queue/Cancel buttons off the bottom of the frame (W3). The anchor `rect` is
-    // captured once; only the card's own measured size varies between calls.
+    // its Queue/Cancel buttons off the bottom of the frame (W3), and whenever the
+    // frame resizes, against a freshly measured anchor `rect`.
     function positionCard() {
       const left = Math.min(Math.max(12, rect.left), window.innerWidth - card.offsetWidth - 12);
       const top = Math.min(Math.max(12, rect.bottom + 8), window.innerHeight - card.offsetHeight - 12);
@@ -2404,6 +2410,31 @@ export function createArtifactSdk(
       card.style.top = top + "px";
     }
     positionCard();
+
+    // The card is fixed inside the frame, so it stays put when the frame changes size. On a
+    // phone the on-screen keyboard shrinks the frame (the chrome asks for
+    // `interactive-widget=resizes-content`), which left a card opened in the lower part of the
+    // page under the conversation dock and the keyboard. On every resize, measure the anchor
+    // again and re-clamp. When the frame got shorter and the card no longer fits below its
+    // anchor, first scroll the page up by the shortfall, never past the anchor's own top, so
+    // the anchor stays in view above the card.
+    let viewportHeight = window.innerHeight;
+    const keepCardInView = () => {
+      const shrank = window.innerHeight < viewportHeight;
+      viewportHeight = window.innerHeight;
+      rect = measureAnchor();
+      if (shrank) {
+        const shortfall = rect.bottom + 8 + card.offsetHeight + 12 - window.innerHeight;
+        const lift = Math.min(shortfall, rect.top - 12);
+        if (lift > 0) {
+          window.scrollBy({ top: lift, behavior: "instant" });
+          rect = measureAnchor();
+        }
+      }
+      positionCard();
+    };
+    window.addEventListener("resize", keepCardInView);
+    releaseCardViewport = () => window.removeEventListener("resize", keepCardInView);
 
     const textarea = /** @type {HTMLTextAreaElement | null} */ (card.querySelector("textarea"));
     const cancelButton = /** @type {HTMLButtonElement | null} */ (card.querySelector(".lavish-cancel"));

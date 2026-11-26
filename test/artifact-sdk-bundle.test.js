@@ -229,7 +229,10 @@ function bootSdk({
   const windowListeners = [];
   sandbox.window = {
     addEventListener: (type, handler) => windowListeners.push({ type, handler }),
-    removeEventListener() {},
+    removeEventListener: (type, handler) => {
+      const index = windowListeners.findIndex((entry) => entry.type === type && entry.handler === handler);
+      if (index >= 0) windowListeners.splice(index, 1);
+    },
     setTimeout: scheduleTimer,
     clearTimeout: cancelTimer,
     requestAnimationFrame: (fn) => (runAnimationFrames ? scheduleTimer(fn, 0) : 0),
@@ -239,6 +242,9 @@ function bootSdk({
     scrollY: 0,
     location: { origin: "http://127.0.0.1" },
     URL: sandbox.URL,
+    scrollBy({ top = 0 } = {}) {
+      sandbox.window.scrollY += top;
+    },
   };
   sandbox.globalThis = sandbox;
 
@@ -250,6 +256,13 @@ function bootSdk({
     posted,
     body,
     api: sandbox.window.lavish,
+    window: sandbox.window,
+    // Gives the frame a new height and fires the resize the browser would, as the phone keyboard
+    // does when it opens over a page using `interactive-widget=resizes-content`.
+    resizeWindow(height) {
+      sandbox.window.innerHeight = height;
+      for (const listener of windowListeners.filter((entry) => entry.type === "resize")) listener.handler({});
+    },
     // The SDK checks `instanceof Element`, so a stub that must pass that check takes this prototype.
     asElement(stub) {
       return Object.setPrototypeOf(stub, sandbox.Element.prototype);
@@ -613,6 +626,70 @@ test("the served SDK bundle annotates elements outside tables with no table targ
 
   assert.equal(message.prompt.tag, "p");
   assert.equal(message.prompt.target, undefined);
+});
+
+// A paragraph `top` px down the page, measured the way the browser does: against the current scroll.
+function pageParagraph(sdk, text, top) {
+  const paragraph = appendTo(sdk.body, cell("p", text));
+  paragraph.getBoundingClientRect = () => {
+    const viewportTop = top - sdk.window.scrollY;
+    return { left: 10, top: viewportTop, right: 110, bottom: viewportTop + 30, width: 100, height: 30 };
+  };
+  return paragraph;
+}
+
+test("a card stays above the phone keyboard, with its target in view above it", () => {
+  const sdk = bootSdk();
+  const paragraph = pageParagraph(sdk, "Low on the page", 600);
+
+  sdk.click(paragraph);
+  const card = sdk.card();
+  assert.equal(card.style.top, "638px", "the card opens under its target");
+
+  // The keyboard takes 400px of the 800px frame. The card (100px tall) no longer fits under its
+  // target, so the page scrolls up by the shortfall and the card follows the target.
+  sdk.resizeWindow(400);
+
+  assert.equal(sdk.window.scrollY, 350);
+  assert.equal(card.style.top, "288px");
+  const cardBottom = parseFloat(card.style.top) + card.offsetHeight;
+  assert.ok(cardBottom <= 400 - 12, `the card ends above the keyboard: ${cardBottom}`);
+  assert.ok(parseFloat(card.style.top) >= paragraph.getBoundingClientRect().bottom, "the target stays above the card");
+});
+
+test("a card scrolls the page no further than its target's own top", () => {
+  const sdk = bootSdk();
+  const paragraph = pageParagraph(sdk, "Low on the page", 600);
+
+  sdk.click(paragraph);
+  sdk.resizeWindow(150);
+
+  assert.equal(sdk.window.scrollY, 588, "the target's top stops at the frame's top margin");
+  // Too short a frame for both: the card is still clamped inside it, over the target's bottom.
+  assert.equal(sdk.card().style.top, "38px");
+});
+
+test("a frame that grows back re-anchors the card without scrolling", () => {
+  const sdk = bootSdk();
+  const paragraph = pageParagraph(sdk, "Low on the page", 600);
+
+  sdk.click(paragraph);
+  sdk.resizeWindow(400);
+  sdk.resizeWindow(800);
+
+  assert.equal(sdk.window.scrollY, 350, "closing the keyboard leaves the page where it is");
+  assert.equal(sdk.card().style.top, "288px", "the card stays under its target");
+});
+
+test("a closed card stops following frame resizes", () => {
+  const sdk = bootSdk();
+  const paragraph = pageParagraph(sdk, "Low on the page", 600);
+
+  sdk.click(paragraph);
+  sdk.card().querySelector(".lavish-cancel").onclick();
+  sdk.resizeWindow(400);
+
+  assert.equal(sdk.window.scrollY, 0);
 });
 
 // closeCard() clears the element highlight, so that highlight standing or gone is the observable proof of close.
