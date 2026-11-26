@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.1.98](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.97...lavish-axi-v0.1.98) (2026-11-17)
+
+
+### Bug Fixes
+
+* **cli:** run the shared server from the state dir, not the caller's folder ([#497](https://github.com/kunchenguid/lavish-axi/issues/497)) ([589681f](https://github.com/kunchenguid/lavish-axi/commit/589681fe1e85f365c8f0747202f8d40fb606e13a))
+* **cli:** stop discovery from retiring the kept server through a proxy alias ([#503](https://github.com/kunchenguid/lavish-axi/issues/503)) ([d0c1667](https://github.com/kunchenguid/lavish-axi/commit/d0c166703d8f18567751a0af48da8071e7b5c923))
+* **server:** ignore HTML comments when reading the artifact title ([#501](https://github.com/kunchenguid/lavish-axi/issues/501)) ([fa70396](https://github.com/kunchenguid/lavish-axi/commit/fa70396c75a6b792be859e036984fcfd6ace9792))
+
+## [0.1.97](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.96...lavish-axi-v0.1.97) (2026-11-13)
+
+
+### Bug Fixes
+
+* **sdk:** keep annotation selectors unique so a click reopens only its own queued note ([#493](https://github.com/kunchenguid/lavish-axi/issues/493)) ([d331d40](https://github.com/kunchenguid/lavish-axi/commit/d331d40561ed2dfac878526e18c6a36c10219bb9))
+* **sdk:** place the reveal marker on the settled target after the smooth scroll ([#491](https://github.com/kunchenguid/lavish-axi/issues/491)) ([b184b58](https://github.com/kunchenguid/lavish-axi/commit/b184b5804e24b9edf618ac8a1c59308a9a2dc8d8))
+
 ## [0.1.96](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.95...lavish-axi-v0.1.96) (2026-10-29)
 
 

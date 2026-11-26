@@ -26,7 +26,9 @@ async function withTempDir(run) {
   try {
     return await run(dir);
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    // The spawned server runs with the state dir as its cwd, and Windows refuses to remove a
+    // directory that a still-exiting process is in.
+    await rm(dir, { recursive: true, force: true, maxRetries: 10 });
   }
 }
 

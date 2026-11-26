@@ -416,7 +416,7 @@ test(
     } finally {
       run(process.execPath, ["bin/lavish-axi.js", "stop", "--port", String(port)], lavishEnv, 15_000);
       run("chrome-devtools-axi", ["stop"], chromeEnv);
-      await rm(temp, { recursive: true, force: true });
+      await rm(temp, { recursive: true, force: true, maxRetries: 10 });
     }
   },
 );
@@ -507,7 +507,7 @@ test("a live reload preserves the review context Lavish owns", { skip: !runBrows
   } finally {
     run(process.execPath, ["bin/lavish-axi.js", "stop", "--port", String(port)], lavishEnv, 15_000);
     run("chrome-devtools-axi", ["stop"], chromeEnv);
-    await rm(temp, { recursive: true, force: true });
+    await rm(temp, { recursive: true, force: true, maxRetries: 10 });
   }
 });
 

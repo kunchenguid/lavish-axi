@@ -33,7 +33,7 @@ import {
   publishToHtmlApp,
   updateHtmlApp,
 } from "./html-app.js";
-import { localInterfaceAddresses } from "./local-address.js";
+import { discoveryHosts, localInterfaceAddresses } from "./local-address.js";
 import {
   clientHost,
   defaultPort,
@@ -43,6 +43,7 @@ import {
   LOOPBACK_HOST,
   resolveConcreteListenHosts,
   serverLogFile,
+  stateDir,
   stateFile,
   stateId,
 } from "./paths.js";
@@ -1766,17 +1767,12 @@ const MAX_HEALTH_BODY_BYTES = 256 * 1024;
 // answering, which can take longer than a plain health read.
 const HEALTH_RECONCILE_TIMEOUT_MS = 3000;
 
-// Every address a Lavish server on this port could be answering at, in preference order: the host
-// this CLI is configured for, loopback, then every other local interface address. Agents on one
-// machine do not share LAVISH_AXI_HOST, and a CLI that only dialed its own host (plus loopback)
-// concluded nothing was running while a server pinned to the tailnet address held the port, then
-// spawned a second daemon beside it on the same port and the same state file.
+// The addresses a Lavish server on this port could be answering at: the host this CLI is
+// configured for and loopback. Agents on one machine do not share LAVISH_AXI_HOST, so loopback is
+// the meeting point - every server binds it first as the port lock. See `discoveryHosts` for the
+// opt-in sweep that also finds a pre-0.1.78 server pinned to another address alone.
 function serverCandidateHosts() {
-  const hosts = [clientHost(), LOOPBACK_HOST];
-  for (const address of localInterfaceAddresses()) {
-    if (!hosts.includes(address)) hosts.push(address);
-  }
-  return hosts;
+  return discoveryHosts([clientHost(), LOOPBACK_HOST]);
 }
 
 function serverBaseUrl(host, port) {
@@ -1841,14 +1837,22 @@ async function findRunningServer(port, { reconcileNetwork = false } = {}) {
 }
 
 // Other Lavish daemons of this installation on the same port. An address the chosen server itself
-// reports as bound is the chosen server, not a duplicate. A server too old to report its addresses
-// is about to be replaced by version, so every other address is retired with it: an old daemon left
-// holding loopback would otherwise make the upgraded server refuse to start.
+// reports as bound, or a matching process identity through a proxy, is not a duplicate. A server
+// too old to report its addresses is about to be replaced by version, so every other address is
+// retired with it: an old daemon left holding loopback would otherwise make the upgraded server
+// refuse to start.
 function ownedDuplicates(owned, chosen) {
   const covered = new Set([chosen.host, ...(Array.isArray(chosen.health.hosts) ? chosen.health.hosts : [])]);
+  const chosenId = chosen.health.process_id;
   const duplicates = [];
   for (const entry of owned) {
-    if (entry === chosen || covered.has(entry.host)) continue;
+    const processId = entry.health.process_id;
+    if (
+      entry === chosen ||
+      covered.has(entry.host) ||
+      (typeof processId === "string" && processId !== "" && processId === chosenId)
+    )
+      continue;
     duplicates.push(entry);
     for (const host of Array.isArray(entry.health.hosts) ? entry.health.hosts : [entry.host]) covered.add(host);
   }
@@ -2274,10 +2278,16 @@ export function createServerSpawnOptions(logFd = null) {
   const stdio = /** @type {import("node:child_process").StdioOptions} */ (
     logFd === null ? "ignore" : ["ignore", logFd, logFd]
   );
+  // The server is shared machine-wide, so it must not pin the first caller's folder: tools that
+  // reap processes by working directory when deleting a worktree would stop every open session.
+  // The state dir is passed absolute so a relative LAVISH_AXI_STATE_DIR is not re-resolved
+  // against that new cwd.
+  const dir = path.resolve(stateDir());
   return {
     detached: true,
     stdio,
-    env: { ...process.env, LAVISH_AXI_NO_OPEN: "1" },
+    cwd: dir,
+    env: { ...process.env, LAVISH_AXI_STATE_DIR: dir, LAVISH_AXI_NO_OPEN: "1" },
   };
 }
 
