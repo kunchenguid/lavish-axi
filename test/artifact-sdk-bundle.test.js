@@ -44,8 +44,11 @@ function createElement(tag) {
         .split(",")
         .some((part) => {
           const selector = part.trim();
-          if (selector.startsWith("[")) return attributes.has(selector.slice(1, selector.indexOf("]")).split("=")[0]);
-          return selector === element.tagName.toLowerCase();
+          // `tag`, `[attr]`, or `tag[attr]` (e.g. `a[href]`): enough selector for what the SDK asks.
+          const bracket = selector.indexOf("[");
+          const tag = bracket >= 0 ? selector.slice(0, bracket) : selector;
+          if (tag && tag !== element.tagName.toLowerCase()) return false;
+          return bracket < 0 || attributes.has(selector.slice(bracket + 1, selector.indexOf("]")).split("=")[0]);
         });
     },
     closest(selectorList) {
@@ -85,8 +88,15 @@ function createElement(tag) {
     click() {},
     scrollIntoView() {},
     attachShadow() {
-      element.shadowRoot = createElement("shadow-root");
-      return element.shadowRoot;
+      const shadowRoot = createElement("shadow-root");
+      // A new Reveal drops the previous marker by querying the shadow root for its class, so that
+      // query answers with the markers actually appended there.
+      shadowRoot.querySelectorAll = (selector) =>
+        selector === ".lavish-reveal-marker"
+          ? shadowRoot.children.filter((child) => child.className === "lavish-reveal-marker")
+          : [];
+      element.shadowRoot = shadowRoot;
+      return shadowRoot;
     },
   };
   return element;
@@ -104,7 +114,52 @@ function cell(tag, text) {
   return element;
 }
 
-function bootSdk({ runAnimationFrames = false, revisionsScript = null, revisionMarkElements = [] } = {}) {
+// Resolves the `tag#id:nth-of-type(n) > ...` chains `selector()` emits against the stub tree, so a
+// test can ask the SDK how many elements its own selector matches.
+function queryChildChain(root, selectorText) {
+  const parts = String(selectorText)
+    .split(">")
+    .map((part) => part.trim());
+  const parsed = parts.map((part) => {
+    const match = /^([a-z0-9-]+)(?:#([^:]+))?(?::nth-of-type\((\d+)\))?$/i.exec(part);
+    return match ? { tag: match[1].toUpperCase(), id: match[2], nth: match[3] ? Number(match[3]) : null } : null;
+  });
+  if (parsed.some((part) => !part)) return [];
+  const matchesPart = (node, part) => {
+    if (!node || node.tagName !== part.tag) return false;
+    if (part.id !== undefined && node.id !== part.id) return false;
+    if (part.nth !== null) {
+      const same = (node.parentElement?.children || []).filter((x) => x.tagName === node.tagName);
+      if (same.indexOf(node) + 1 !== part.nth) return false;
+    }
+    return true;
+  };
+  const results = [];
+  const visit = (node) => {
+    let current = node;
+    let ok = true;
+    for (let index = parsed.length - 1; index >= 0; index -= 1) {
+      if (!matchesPart(current, parsed[index])) {
+        ok = false;
+        break;
+      }
+      current = current.parentElement;
+    }
+    if (ok) results.push(node);
+    for (const child of node.children) visit(child);
+  };
+  visit(root);
+  return results;
+}
+
+function bootSdk({
+  runAnimationFrames = false,
+  revisionsScript = null,
+  revisionMarkElements = [],
+  htmlAnnotate = null,
+  platform = "Linux",
+  structuralQueries = false,
+} = {}) {
   const posted = [];
   const documentListeners = [];
   // Deferred work the SDK schedules, run only when a test asks for it: the draft-anchor settle
@@ -116,16 +171,19 @@ function bootSdk({ runAnimationFrames = false, revisionsScript = null, revisionM
   };
   /** @type {(selector: string) => any} */
   let documentQuery = () => null;
+  /** @type {any} */
+  let selection = null;
   const documentElement = createElement("html");
   const head = createElement("head");
   const body = createElement("body");
+  if (htmlAnnotate !== null) documentElement.setAttribute("data-lavish-annotate", htmlAnnotate);
   appendTo(documentElement, head);
   appendTo(documentElement, body);
   for (const element of revisionMarkElements) appendTo(body, element);
 
   const sandbox = {
     parent: { postMessage: (message) => posted.push(message) },
-    navigator: { platform: "Linux" },
+    navigator: { platform },
     CSS: { escape: (value) => String(value) },
     Element: class Element {},
     MutationObserver: class MutationObserver {
@@ -159,8 +217,13 @@ function bootSdk({ runAnimationFrames = false, revisionsScript = null, revisionM
       getElementById: () => null,
       querySelector: (selector) =>
         selector === "script[data-lavish-revisions]" ? revisionsScript : documentQuery(selector),
-      querySelectorAll: (selector) => (selector === "[data-lavish-revision]" ? revisionMarkElements : []),
-      getSelection: () => null,
+      querySelectorAll: (selector) =>
+        selector === "[data-lavish-revision]"
+          ? revisionMarkElements
+          : structuralQueries
+            ? queryChildChain(documentElement, selector)
+            : [],
+      getSelection: () => selection,
     },
   };
   const windowListeners = [];
@@ -182,13 +245,53 @@ function bootSdk({ runAnimationFrames = false, revisionsScript = null, revisionM
   vm.runInNewContext(createSdkJs("abc", 3, "load-token"), sandbox);
 
   return {
+    document: sandbox.document,
+    Element: sandbox.Element,
     posted,
     body,
     api: sandbox.window.lavish,
-    click(target) {
+    // The SDK checks `instanceof Element`, so a stub that must pass that check takes this prototype.
+    asElement(stub) {
+      return Object.setPrototypeOf(stub, sandbox.Element.prototype);
+    },
+    // Returns the dispatched event so a test can tell whether the SDK swallowed the click.
+    click(target, modifiers = {}) {
       const listener = documentListeners.find((entry) => entry.type === "click");
       assert.ok(listener, "the SDK registers a document click listener");
-      listener.handler({ target, preventDefault() {}, stopPropagation() {} });
+      const event = {
+        target,
+        ctrlKey: false,
+        metaKey: false,
+        ...modifiers,
+        defaultPrevented: false,
+        preventDefault() {
+          event.defaultPrevented = true;
+        },
+        stopPropagation() {},
+      };
+      listener.handler(event);
+      return event;
+    },
+    // Releases the mouse over `target` with `text` selected inside it, as a drag-select would.
+    selectText(target, text) {
+      const textNode = { nodeType: 3, parentElement: target, parentNode: { childNodes: [] } };
+      textNode.parentNode.childNodes.push(textNode);
+      const range = {
+        collapsed: false,
+        commonAncestorContainer: textNode,
+        startContainer: textNode,
+        startOffset: 0,
+        endContainer: textNode,
+        endOffset: text.length,
+        cloneRange: () => range,
+        getClientRects: () => [],
+        getBoundingClientRect: () => target.getBoundingClientRect(),
+      };
+      selection = { rangeCount: 1, getRangeAt: () => range, toString: () => text };
+      const listener = documentListeners.find((entry) => entry.type === "mouseup");
+      assert.ok(listener, "the SDK registers a document mouseup listener");
+      listener.handler({ target });
+      selection = null;
     },
     setDocumentQuery(query) {
       documentQuery = query;
@@ -215,6 +318,27 @@ function bootSdk({ runAnimationFrames = false, revisionsScript = null, revisionM
       }
       assert.fail("the SDK timer queue did not settle");
     },
+    // Runs only the queued animation frames (the harness schedules them as 0 ms timers), leaving
+    // longer timers such as the reveal marker's removal queued.
+    runFrames() {
+      const pending = timers.filter((timer) => timer.ms === 0 && !timer.ran && !timer.cancelled);
+      for (const timer of pending) {
+        timer.ran = true;
+        timer.fn();
+      }
+    },
+    // Runs the queued timers of exactly `ms` milliseconds.
+    runTimersOf(ms) {
+      for (const timer of timers.filter((entry) => entry.ms === ms && !entry.ran && !entry.cancelled)) {
+        timer.ran = true;
+        timer.fn();
+      }
+    },
+    revealMarkers() {
+      return documentElement.children
+        .flatMap((child) => child.shadowRoot?.children || [])
+        .filter((child) => child.className === "lavish-reveal-marker");
+    },
     // The chrome is the only legitimate sender, so its messages arrive with `source: parent`.
     sendChromeMessage(data) {
       const listeners = windowListeners.filter((entry) => entry.type === "message");
@@ -239,6 +363,114 @@ function bootSdk({ runAnimationFrames = false, revisionsScript = null, revisionM
     },
   };
 }
+
+for (const { label, attributes, enabled } of [
+  { label: "default", attributes: {}, enabled: true },
+  { label: "html off", attributes: { htmlAnnotate: "off" }, enabled: false },
+  { label: "html on", attributes: { htmlAnnotate: "on" }, enabled: true },
+  { label: "unknown html value", attributes: { htmlAnnotate: "no" }, enabled: true },
+  { label: "empty html value", attributes: { htmlAnnotate: "" }, enabled: true },
+]) {
+  test(`annotation declaration honours ${label} and reports its initial mode`, () => {
+    const sdk = bootSdk(attributes);
+    const target = appendTo(sdk.body, cell("p", "Decision board"));
+    assert.equal(sdk.click(target).defaultPrevented, enabled);
+    assert.equal(sdk.cards().length, enabled ? 1 : 0);
+    const mode = sdk.posted.find((message) => message.type === "lavish:annotationMode");
+    assert.ok(mode, "the SDK reports the initial mode to the chrome");
+    assert.equal(mode.enabled, enabled);
+    assert.equal(mode.artifact_load_token, "load-token");
+  });
+}
+
+// Applying the page's "off" default closes no card, so it must not report one gone: the chrome
+// saves every `card: null` report over the stored draft, and the frame's load event that replays
+// that draft can arrive after a slow image, later than the report.
+test("a page that declares off reports no review state at boot", () => {
+  const sdk = bootSdk({ htmlAnnotate: "off" });
+  sdk.runTimers();
+  assert.equal(
+    sdk.posted.some((message) => message.type === "lavish:reviewState"),
+    false,
+    "nothing was open, so there is no card state to retire",
+  );
+  const target = appendTo(sdk.body, cell("h1", "Headline"));
+  sdk.sendChromeMessage({
+    type: "lavish:restoreReviewState",
+    state: { card: { selector: "h1", text: "needs a shorter headline" }, fields: [] },
+  });
+  sdk.setDocumentQuery((selector) => (selector === "h1" ? target : null));
+  sdk.runTimers();
+  assert.equal(sdk.card().querySelector("textarea").value, "needs a shorter headline");
+});
+
+test("the chrome can turn annotation on and off after a page declares off", () => {
+  const sdk = bootSdk({ htmlAnnotate: "off" });
+  const target = appendTo(sdk.body, cell("p", "Decision board"));
+  assert.equal(sdk.click(target).defaultPrevented, false);
+  sdk.sendChromeMessage({ type: "lavish:setAnnotationMode", enabled: true });
+  assert.equal(sdk.click(target).defaultPrevented, true);
+  assert.equal(sdk.cards().length, 1);
+  sdk.sendChromeMessage({ type: "lavish:setAnnotationMode", enabled: false });
+  assert.equal(sdk.click(target).defaultPrevented, false);
+  // This harness retains closed cards; no new card should appear while disabled.
+  assert.equal(sdk.cards().length, 1);
+  sdk.runTimers();
+  const state = sdk.posted.filter((message) => message.type === "lavish:reviewState").at(-1);
+  assert.equal(state.state.card, null, "turning annotation off closes the active card");
+});
+
+// Reveal scrolls smoothly, so the target's rect only reaches its final place once the scroll
+// settles. This target reports its pre-scroll rect until the test says the scroll has settled.
+function bootRevealTarget() {
+  const sdk = bootSdk({ runAnimationFrames: true });
+  const scroll = { settled: false, reads: 0 };
+  const target = sdk.asElement(appendTo(sdk.body, cell("section", "Revised block")));
+  const calls = [];
+  target.scrollIntoView = (options) => calls.push(options);
+  target.getBoundingClientRect = () =>
+    ++scroll.reads && scroll.settled
+      ? { left: 40, top: 300, right: 640, bottom: 420, width: 600, height: 120 }
+      : { left: 40, top: 2200, right: 640, bottom: 2320, width: 600, height: 120 };
+  sdk.setDocumentQuery((selector) => (selector === "#revised" ? target : null));
+  return { sdk, scroll, calls };
+}
+
+function assertMarkerAtSettledRect(sdk) {
+  const markers = sdk.revealMarkers();
+  assert.equal(markers.length, 1);
+  assert.deepEqual(
+    { left: markers[0].style.left, top: markers[0].style.top, width: markers[0].style.width },
+    { left: "40px", top: "300px", width: "600px" },
+    "the marker sits on the settled rect, not the pre-scroll one",
+  );
+}
+
+test("reveal keeps the smooth scroll and moves the marker to the settled rect frame by frame", () => {
+  const { sdk, scroll, calls } = bootRevealTarget();
+  sdk.sendChromeMessage({ type: "lavish:revealElement", selector: "#revised" });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].behavior, "smooth");
+  scroll.settled = true;
+  sdk.runFrames();
+  assertMarkerAtSettledRect(sdk);
+});
+
+test("a reveal marker stops tracking once it is removed or replaced", () => {
+  const { sdk, scroll } = bootRevealTarget();
+  sdk.sendChromeMessage({ type: "lavish:revealElement", selector: "#revised" });
+  sdk.sendChromeMessage({ type: "lavish:revealElement", selector: "#revised" });
+  assert.equal(sdk.revealMarkers().length, 1, "a new reveal replaces the previous marker at once");
+  const readsBeforeFrame = scroll.reads;
+  sdk.runFrames();
+  assert.equal(scroll.reads - readsBeforeFrame, 1, "a new reveal stops the previous one's frame loop");
+  sdk.runTimersOf(2400);
+  assert.equal(sdk.revealMarkers().length, 0);
+  const readsAtRemoval = scroll.reads;
+  sdk.runFrames();
+  sdk.runFrames();
+  assert.equal(scroll.reads, readsAtRemoval, "no frame re-reads the target after the marker is gone");
+});
 
 function buildTable(sdk) {
   const table = appendTo(sdk.body, createElement("table"));
@@ -309,7 +541,7 @@ test("the served SDK bundle reports the artifact's own revision registry and mar
 });
 
 test("the served SDK bundle queues a table-cell annotation without a missing-helper ReferenceError", () => {
-  const sdk = bootSdk();
+  const sdk = bootSdk({ structuralQueries: true });
   const { evidence } = buildTable(sdk);
 
   sdk.click(evidence);
@@ -330,7 +562,7 @@ test("the served SDK bundle queues a table-cell annotation without a missing-hel
 });
 
 test("the served SDK bundle keeps the clicked element's own identity inside a table cell", () => {
-  const sdk = bootSdk();
+  const sdk = bootSdk({ structuralQueries: true });
   const { badge } = buildTable(sdk);
 
   sdk.click(badge);
@@ -412,6 +644,22 @@ test("Escape during IME composition leaves an empty annotation card open", () =>
   listener.handler({ key: "Escape", isComposing: true, preventDefault() {} });
 
   assert.notEqual(paragraph.style.outline, "", "a composing Escape belongs to the IME, not the card");
+});
+
+test("the Enter that confirms an IME conversion in WebKit leaves the annotation card open", () => {
+  const sdk = bootSdk();
+  const paragraph = appendTo(sdk.body, cell("p", "Just prose"));
+
+  sdk.click(paragraph);
+  const textarea = sdk.card().querySelector("textarea");
+  textarea.value = "漢字";
+  const listener = textarea.listeners.find((entry) => entry.type === "keydown");
+  let prevented = false;
+  // WebKit fires compositionend before this keydown, so only keyCode 229 marks it as the IME's.
+  listener.handler({ key: "Enter", isComposing: false, keyCode: 229, preventDefault: () => (prevented = true) });
+
+  assert.equal(prevented, false, "the IME keeps its Enter");
+  assert.notEqual(paragraph.style.outline, "", "the card stays open");
 });
 
 test("Escape leaves an annotation card with typed text open and untouched", () => {
@@ -561,5 +809,628 @@ test("the served SDK bundle drops a late restore once the user has opened a card
   assert.equal(
     sdk.posted.some((message) => message.type === "lavish:reviewDraftUnrestorable"),
     false,
+  );
+});
+
+test("clicking an element with a queued note asks the chrome to edit it instead of opening a card", () => {
+  const sdk = bootSdk();
+  const paragraph = appendTo(sdk.body, cell("p", "Just prose"));
+  sdk.click(paragraph);
+  const queued = sdk.queue("Reword this");
+  sdk.sendChromeMessage({ type: "lavish:queuedAnchors", selectors: [queued.prompt.selector] });
+  // The stub shadow root keeps closed cards, so a new card shows as a higher count.
+  const cardsBefore = sdk.cards().length;
+
+  sdk.click(paragraph);
+
+  assert.equal(sdk.cards().length, cardsBefore);
+  const message = sdk.posted.at(-1);
+  assert.equal(message.type, "lavish:editQueuedAnchor");
+  assert.equal(message.selector, queued.prompt.selector);
+  assert.equal(message.artifact_load_token, "load-token");
+});
+
+test("an element whose queued note left the queue opens a fresh card again", () => {
+  const sdk = bootSdk();
+  const paragraph = appendTo(sdk.body, cell("p", "Just prose"));
+  sdk.click(paragraph);
+  const queued = sdk.queue("Reword this");
+  sdk.sendChromeMessage({ type: "lavish:queuedAnchors", selectors: [queued.prompt.selector] });
+  sdk.sendChromeMessage({ type: "lavish:queuedAnchors", selectors: [] });
+  const cardsBefore = sdk.cards().length;
+
+  sdk.click(paragraph);
+
+  assert.equal(sdk.cards().length, cardsBefore + 1);
+});
+
+test("the chrome can hand an element click back for a fresh card", () => {
+  const sdk = bootSdk();
+  const paragraph = appendTo(sdk.body, cell("p", "Just prose"));
+  sdk.setDocumentQuery((selector) => (selector === "body > p" ? paragraph : null));
+
+  sdk.sendChromeMessage({ type: "lavish:annotateElement", selector: "body > p" });
+
+  assert.match(sdk.card().innerHTML, /Annotate &lt;p&gt;/);
+});
+
+// A Mermaid node as the SDK sees one: a `<g class="node">` inside an SVG Mermaid rendered.
+function buildMermaidNode(sdk) {
+  const svg = appendTo(sdk.body, createElement("svg"));
+  svg.id = "mermaid-1";
+  const node = appendTo(svg, createElement("g"));
+  node.id = "flowchart-A-0";
+  const matchesTag = node.matches;
+  node.matches = (selectorList) =>
+    String(selectorList)
+      .split(",")
+      .some((part) => part.trim() === "g.node") || matchesTag(selectorList);
+  const label = appendTo(node, cell("span", "Start"));
+  const shape = appendTo(node, createElement("rect"));
+  return { label, shape };
+}
+
+test("a note queued from a diagram node's label opens again from the node's shape", () => {
+  const sdk = bootSdk();
+  const { label, shape } = buildMermaidNode(sdk);
+  sdk.click(label);
+  const queued = sdk.queue("Rename this step");
+  sdk.sendChromeMessage({
+    type: "lavish:queuedAnchors",
+    selectors: [queued.prompt.selector, queued.prompt.target.selector],
+  });
+  const cardsBefore = sdk.cards().length;
+
+  sdk.click(shape);
+
+  assert.equal(sdk.cards().length, cardsBefore);
+  const message = sdk.posted.at(-1);
+  assert.equal(message.type, "lavish:editQueuedAnchor");
+  assert.equal(message.selector, queued.prompt.target.selector);
+});
+
+// The chrome hands a click on a node whose note is already sending back as `annotateElement` with
+// the node's own selector, so a note can be queued from the `<g>` itself. A click on any of its
+// shapes still finds that note: the node is one target however deep the click lands.
+test("a note queued on a diagram node itself opens again from the node's shape", () => {
+  const sdk = bootSdk({ structuralQueries: true });
+  const { label, shape } = buildMermaidNode(sdk);
+  const node = label.parentElement;
+  sdk.setDocumentQuery((selector) => (selector === "g#flowchart-A-0" ? node : null));
+  sdk.sendChromeMessage({ type: "lavish:annotateElement", selector: "g#flowchart-A-0" });
+  const queued = sdk.queue("Rename this step");
+  assert.equal(queued.prompt.selector, queued.prompt.target.selector);
+  sdk.sendChromeMessage({ type: "lavish:queuedAnchors", selectors: [queued.prompt.selector] });
+  const cardsBefore = sdk.cards().length;
+
+  sdk.click(shape);
+
+  assert.equal(sdk.cards().length, cardsBefore);
+  const message = sdk.posted.at(-1);
+  assert.equal(message.type, "lavish:editQueuedAnchor");
+  assert.equal(message.selector, queued.prompt.selector);
+});
+
+// Every note inside a diagram node also answers to the node's selector, and the chrome opens the
+// newest note carrying the selector it is given. A click on an element with its own note must
+// name that note's selector, not the node's, or it would open a later note on another shape.
+test("a click inside a diagram node reopens the clicked element's own note before the node's", () => {
+  const sdk = bootSdk({ structuralQueries: true });
+  const { label, shape } = buildMermaidNode(sdk);
+  const otherShape = appendTo(label.parentElement, createElement("path"));
+  const notes = [];
+  for (const [element, text] of [
+    [shape, "Recolour this box"],
+    [label, "Rename this step"],
+    [otherShape, "Thicken this border"],
+  ]) {
+    sdk.click(element);
+    notes.push(sdk.queue(text).prompt);
+  }
+  sdk.sendChromeMessage({
+    type: "lavish:queuedAnchors",
+    selectors: [...new Set(notes.flatMap((prompt) => [prompt.selector, prompt.target.selector]))],
+  });
+
+  sdk.click(label);
+
+  const message = sdk.posted.at(-1);
+  assert.equal(message.type, "lavish:editQueuedAnchor");
+  assert.equal(message.selector, notes[1].selector);
+});
+
+test("a click inside a table cell opens only the note on the exact element clicked", () => {
+  const sdk = bootSdk();
+  const { evidence } = buildTable(sdk);
+  const strong = appendTo(evidence, cell("strong", "Drive"));
+  const em = appendTo(evidence, cell("em", "Cursor"));
+  sdk.click(evidence);
+  const cellNote = sdk.queue("Explain this cell");
+  sdk.click(strong);
+  const strongNote = sdk.queue("Explain this app");
+  sdk.sendChromeMessage({
+    type: "lavish:queuedAnchors",
+    selectors: [cellNote.prompt.selector, strongNote.prompt.selector],
+  });
+  const cardsBefore = sdk.cards().length;
+
+  sdk.click(em);
+
+  assert.equal(sdk.cards().length, cardsBefore + 1);
+  assert.notEqual(sdk.posted.at(-1)?.type, "lavish:editQueuedAnchor");
+});
+
+// In annotate mode a plain click on a link annotates it, so Ctrl-click (Cmd-click on macOS) is the
+// way to follow the link without leaving annotate mode: the SDK steps aside and the browser opens it.
+function buildLink(sdk) {
+  const link = appendTo(sdk.body, cell("a", "Read the spec"));
+  link.setAttribute("href", "https://example.com/spec");
+  const inner = appendTo(link, cell("span", "spec"));
+  return { link, inner };
+}
+
+// The follow modifier is the platform's own: Cmd on macOS, Ctrl elsewhere. Meta on Linux/Windows
+// is the Super/Windows key, which is not a link-follow gesture there, so it annotates like a plain click.
+for (const [platform, modifier] of [
+  ["MacIntel", "metaKey"],
+  ["Linux x86_64", "ctrlKey"],
+  ["Win32", "ctrlKey"],
+]) {
+  test(`${modifier}-click on a link on ${platform} follows the link instead of annotating`, () => {
+    const sdk = bootSdk({ platform });
+    const { link, inner } = buildLink(sdk);
+
+    for (const target of [link, inner]) {
+      const event = sdk.click(target, { [modifier]: true });
+      assert.equal(event.defaultPrevented, false, "the browser's own link handling runs");
+    }
+    assert.equal(sdk.cards().length, 0);
+  });
+}
+
+for (const [platform, modifier] of [
+  ["Linux x86_64", "metaKey"],
+  ["Win32", "metaKey"],
+  ["MacIntel", "ctrlKey"],
+]) {
+  test(`${modifier}-click on a link on ${platform} annotates like a plain click`, () => {
+    const sdk = bootSdk({ platform });
+    const { link } = buildLink(sdk);
+
+    const event = sdk.click(link, { [modifier]: true });
+
+    assert.equal(event.defaultPrevented, true, "the SDK keeps the frame from navigating");
+    assert.match(sdk.card().innerHTML, /Annotate &lt;a&gt;/);
+  });
+}
+
+test("a plain click on a link in annotate mode still opens an annotation card", () => {
+  const sdk = bootSdk();
+  const { link } = buildLink(sdk);
+
+  const event = sdk.click(link);
+
+  assert.equal(event.defaultPrevented, true);
+  assert.match(sdk.card().innerHTML, /Annotate &lt;a&gt;/);
+});
+
+test("a modified click on something that is not a link still annotates", () => {
+  const sdk = bootSdk();
+  const paragraph = appendTo(sdk.body, cell("p", "Just prose"));
+
+  const event = sdk.click(paragraph, { ctrlKey: true });
+
+  assert.equal(event.defaultPrevented, true);
+  assert.match(sdk.card().innerHTML, /Annotate &lt;p&gt;/);
+});
+
+test("Ctrl-click follows a link even when the link already has a queued note", () => {
+  const sdk = bootSdk();
+  const { link } = buildLink(sdk);
+  sdk.click(link);
+  const queued = sdk.queue("Is this the right spec?");
+  sdk.sendChromeMessage({ type: "lavish:queuedAnchors", selectors: [queued.prompt.selector] });
+  const postedBefore = sdk.posted.length;
+
+  const event = sdk.click(link, { ctrlKey: true });
+
+  assert.equal(event.defaultPrevented, false);
+  assert.equal(
+    sdk.posted.slice(postedBefore).some((message) => message.type === "lavish:editQueuedAnchor"),
+    false,
+  );
+});
+
+test("Ctrl-click on a link after a text selection does not eat the next plain click", () => {
+  const sdk = bootSdk();
+  const { link } = buildLink(sdk);
+  const paragraph = appendTo(sdk.body, cell("p", "Just prose"));
+  sdk.selectText(paragraph, "prose");
+  assert.match(sdk.card().innerHTML, /Annotate text/, "the selection opens a text annotation card");
+
+  const followed = sdk.click(link, { ctrlKey: true });
+  assert.equal(followed.defaultPrevented, false);
+
+  sdk.click(paragraph);
+
+  assert.match(sdk.card().innerHTML, /Annotate &lt;p&gt;/);
+});
+
+// #445: two structurally identical elements deeper than five levels used to share one selector,
+// so clicking the second reopened the first one's queued note.
+test("structurally identical deep elements get distinct selectors and their own notes", () => {
+  const sdk = bootSdk({ structuralQueries: true });
+  const images = [];
+  for (let index = 0; index < 2; index += 1) {
+    let node = appendTo(sdk.body, createElement("section"));
+    for (let depth = 0; depth < 4; depth += 1) node = appendTo(node, createElement("div"));
+    images.push(appendTo(node, createElement("img")));
+  }
+
+  sdk.click(images[0]);
+  const first = sdk.queue("Swap this photo");
+  sdk.sendChromeMessage({ type: "lavish:queuedAnchors", selectors: [first.prompt.selector] });
+  const cardsBefore = sdk.cards().length;
+
+  sdk.click(images[1]);
+
+  assert.equal(sdk.cards().length, cardsBefore + 1, "the second image opens a fresh card");
+  assert.notEqual(sdk.posted.at(-1)?.type, "lavish:editQueuedAnchor");
+  const second = sdk.queue("Crop this one");
+  assert.notEqual(second.prompt.selector, first.prompt.selector);
+  assert.deepEqual(queryChildChain(sdk.body.parentElement, first.prompt.selector), [images[0]]);
+  assert.deepEqual(queryChildChain(sdk.body.parentElement, second.prompt.selector), [images[1]]);
+});
+
+// An id only stops the climb when it names one element: generated pages repeat ids.
+test("a repeated id does not stop the selector climb", () => {
+  const sdk = bootSdk({ structuralQueries: true });
+  const images = [];
+  for (let index = 0; index < 2; index += 1) {
+    const section = appendTo(sdk.body, createElement("section"));
+    const card = appendTo(section, createElement("div"));
+    card.id = "card";
+    images.push(appendTo(card, createElement("img")));
+  }
+
+  sdk.click(images[0]);
+  const first = sdk.queue("Swap this photo");
+  sdk.click(images[1]);
+  const second = sdk.queue("Crop this one");
+
+  assert.notEqual(second.prompt.selector, first.prompt.selector);
+  assert.deepEqual(queryChildChain(sdk.body.parentElement, first.prompt.selector), [images[0]]);
+  assert.deepEqual(queryChildChain(sdk.body.parentElement, second.prompt.selector), [images[1]]);
+});
+
+// A chain that matches nothing in the document (here a detached subtree) is not unique either.
+test("a selector matching no element keeps climbing", () => {
+  const sdk = bootSdk({ structuralQueries: true });
+  const detached = createElement("main");
+  const images = [];
+  for (let index = 0; index < 2; index += 1) {
+    let node = appendTo(detached, createElement("section"));
+    for (let depth = 0; depth < 4; depth += 1) node = appendTo(node, createElement("div"));
+    images.push(appendTo(node, createElement("img")));
+  }
+
+  sdk.click(images[0]);
+  const first = sdk.queue("Swap this photo");
+  sdk.click(images[1]);
+  const second = sdk.queue("Crop this one");
+
+  assert.notEqual(second.prompt.selector, first.prompt.selector);
+});
+
+// In an HTML document a type selector matches an SVG element only in its own case, so a chain
+// through `<foreignObject>` (Mermaid wraps every node label in one) must keep that case to name
+// anything. The stubbed query below answers the way a browser does for the lowercased tag.
+test("a selector through an SVG foreignObject keeps its case and names the clicked element", () => {
+  const sdk = bootSdk({ structuralQueries: true });
+  const svg = appendTo(appendTo(sdk.body, createElement("section")), createElement("svg"));
+  const foreignObject = appendTo(svg, createElement("foreignObject"));
+  foreignObject.localName = "foreignObject";
+  const label = appendTo(
+    appendTo(appendTo(foreignObject, createElement("div")), createElement("p")),
+    createElement("span"),
+  );
+  const query = sdk.document.querySelectorAll;
+  sdk.document.querySelectorAll = (selector) => (String(selector).includes("foreignobject") ? [] : query(selector));
+
+  sdk.click(label);
+  const queued = sdk.queue("Rename this step");
+
+  assert.deepEqual(sdk.document.querySelectorAll(queued.prompt.selector), [label]);
+});
+
+// A queued note made before a structurally identical branch appeared must still
+// reopen when its element is clicked, though that element's fresh selector is now longer.
+test("a queued note reopens after an identical branch is added beside it", () => {
+  const sdk = bootSdk({ structuralQueries: true });
+  const build = () => {
+    let node = appendTo(sdk.body, createElement("section"));
+    for (let depth = 0; depth < 4; depth += 1) node = appendTo(node, createElement("div"));
+    return appendTo(node, createElement("img"));
+  };
+  const original = build();
+  sdk.click(original);
+  const queued = sdk.queue("Swap this photo");
+  const twin = build();
+  sdk.sendChromeMessage({ type: "lavish:queuedAnchors", selectors: [queued.prompt.selector] });
+  const cardsBefore = sdk.cards().length;
+
+  sdk.click(original);
+
+  assert.equal(sdk.cards().length, cardsBefore);
+  const message = sdk.posted.at(-1);
+  assert.equal(message.type, "lavish:editQueuedAnchor");
+  assert.equal(message.selector, queued.prompt.selector);
+
+  // The new twin is not the element the note resolves to, so it opens a fresh card.
+  sdk.click(twin);
+  assert.equal(sdk.cards().length, cardsBefore + 1);
+});
+
+// `snapshot()` reads only uid/tag/text, so it must not build selectors, whose
+// uniqueness checks query the whole document once per element.
+test("snapshot does not query the document for selector uniqueness", () => {
+  const sdk = bootSdk({ structuralQueries: true });
+  for (let index = 0; index < 3; index += 1) {
+    let node = appendTo(sdk.body, createElement("section"));
+    for (let depth = 0; depth < 4; depth += 1) node = appendTo(node, createElement("div"));
+  }
+  // The stub Element class matches nothing; let snapshot()'s walk see the stub elements.
+  Object.defineProperty(sdk.Element, Symbol.hasInstance, { value: (value) => Boolean(value?.tagName) });
+  const queries = [];
+  const realQuery = sdk.document.querySelectorAll;
+  sdk.document.querySelectorAll = (selector) => {
+    queries.push(selector);
+    return realQuery(selector);
+  };
+
+  sdk.sendChromeMessage({ type: "lavish:requestSnapshot", snapshot_request_id: "s-1" });
+
+  const response = sdk.posted.at(-1);
+  assert.equal(response.type, "lavish:snapshot");
+  assert.match(response.snapshot, /section/);
+  assert.deepEqual(queries, []);
+});
+
+// An identical branch inserted *before* the annotated one makes the queued selector's
+// first match the new copy. The note must still follow the element it was queued from.
+test("a queued note follows its element when an identical branch is inserted before it", () => {
+  const sdk = bootSdk({ structuralQueries: true });
+  const build = () => {
+    const section = appendTo(sdk.body, createElement("section"));
+    let node = section;
+    for (let depth = 0; depth < 4; depth += 1) node = appendTo(node, createElement("div"));
+    return { section, img: appendTo(node, createElement("img")) };
+  };
+  const original = build().img;
+  sdk.click(original);
+  const queued = sdk.queue("Swap this photo");
+  const copy = build();
+  sdk.body.children.splice(sdk.body.children.indexOf(copy.section), 1);
+  sdk.body.children.unshift(copy.section);
+  sdk.sendChromeMessage({ type: "lavish:queuedAnchors", selectors: [queued.prompt.selector] });
+  const cardsBefore = sdk.cards().length;
+
+  sdk.click(copy.img);
+  assert.equal(sdk.cards().length, cardsBefore + 1);
+  assert.notEqual(sdk.posted.at(-1)?.type, "lavish:editQueuedAnchor");
+
+  sdk.click(original);
+  const message = sdk.posted.at(-1);
+  assert.equal(message.type, "lavish:editQueuedAnchor");
+  assert.equal(message.selector, queued.prompt.selector);
+});
+
+// Two notes on one element whose selector changed between them: the chrome lists selectors oldest
+// note first and opens the newest note carrying the selector it gets, so a click must name the
+// newer note's selector, as it did when the click sent the element's fresh selector.
+test("a click reopens the newer of two notes queued on one element whose selector changed", () => {
+  const sdk = bootSdk({ structuralQueries: true });
+  const paragraph = appendTo(sdk.body, cell("p", "Just prose"));
+  sdk.api.queuePrompt("Reword this", { element: paragraph, queueKey: "" });
+  const older = sdk.posted.at(-1).prompt;
+  const inserted = cell("p", "Inserted above");
+  inserted.parentElement = sdk.body;
+  sdk.body.children.unshift(inserted);
+  sdk.api.queuePrompt("Shorten this", { element: paragraph, queueKey: "" });
+  const newer = sdk.posted.at(-1).prompt;
+  assert.notEqual(newer.selector, older.selector);
+  sdk.sendChromeMessage({ type: "lavish:queuedAnchors", selectors: [older.selector, newer.selector] });
+
+  sdk.click(paragraph);
+
+  const message = sdk.posted.at(-1);
+  assert.equal(message.type, "lavish:editQueuedAnchor");
+  assert.equal(message.selector, newer.selector);
+});
+
+// A note the chrome cannot open (it is Sending) answers the reopen click with
+// `lavish:annotateElement` and the note's stored selector. The fresh card must open on the
+// element the note was queued from, not on the inserted copy that selector now matches first.
+test("a fresh card for a note that cannot open lands on its element, not the copy its selector now names first", () => {
+  const sdk = bootSdk({ structuralQueries: true });
+  sdk.setDocumentQuery((selector) => queryChildChain(sdk.body.parentElement, selector)[0] ?? null);
+  const build = () => {
+    const section = appendTo(sdk.body, createElement("section"));
+    let node = section;
+    for (let depth = 0; depth < 4; depth += 1) node = appendTo(node, createElement("div"));
+    return { section, img: appendTo(node, createElement("img")) };
+  };
+  const original = build().img;
+  sdk.click(original);
+  const queued = sdk.queue("Swap this photo");
+  const copy = build();
+  sdk.body.children.splice(sdk.body.children.indexOf(copy.section), 1);
+  sdk.body.children.unshift(copy.section);
+  assert.equal(queryChildChain(sdk.body.parentElement, queued.prompt.selector)[0], copy.img);
+
+  sdk.sendChromeMessage({ type: "lavish:annotateElement", selector: queued.prompt.selector });
+  const fresh = sdk.queue("Crop this one");
+
+  assert.deepEqual(queryChildChain(sdk.body.parentElement, fresh.prompt.selector), [original]);
+});
+
+// After a reload the frame has no record of which element a note came from, so the note falls
+// back to its selector and the element that selector names reopens it.
+test("after a reload a queued note reopens on the element its selector names", () => {
+  const before = bootSdk({ structuralQueries: true });
+  before.click(appendTo(before.body, cell("p", "Just prose")));
+  const queued = before.queue("Reword this");
+  const sdk = bootSdk({ structuralQueries: true });
+  const reloaded = appendTo(sdk.body, cell("p", "Just prose"));
+  sdk.sendChromeMessage({ type: "lavish:queuedAnchors", selectors: [queued.prompt.selector] });
+  const cardsBefore = sdk.cards().length;
+
+  sdk.click(reloaded);
+
+  assert.equal(sdk.cards().length, cardsBefore);
+  assert.equal(sdk.posted.at(-1).type, "lavish:editQueuedAnchor");
+  assert.equal(sdk.posted.at(-1).selector, queued.prompt.selector);
+});
+
+// After a reload the stored selector may be written differently from the selector the page now
+// builds for the same element. It still reopens the note when it names that one element alone.
+test("after a reload a queued selector that names only the clicked element reopens its note", () => {
+  const sdk = bootSdk({ structuralQueries: true });
+  const paragraph = appendTo(sdk.body, cell("p", "Just prose"));
+  sdk.sendChromeMessage({ type: "lavish:queuedAnchors", selectors: ["body > p"] });
+  const cardsBefore = sdk.cards().length;
+
+  sdk.click(paragraph);
+
+  assert.equal(sdk.cards().length, cardsBefore);
+  assert.equal(sdk.posted.at(-1).type, "lavish:editQueuedAnchor");
+  assert.equal(sdk.posted.at(-1).selector, "body > p");
+});
+
+// A text note is about the words, so no click reopens it, and it must not take over an element
+// note's selector string either. After a reorder hands that string to another element, a text note
+// queued inside that element would otherwise make a click there reopen the other element's note.
+test("a text note queued inside an element does not make a click there reopen another element's note", () => {
+  const sdk = bootSdk({ structuralQueries: true });
+  const moved = appendTo(sdk.body, cell("p", "First"));
+  const other = appendTo(sdk.body, cell("p", "Second"));
+  sdk.click(moved);
+  const elementNote = sdk.queue("Reword this");
+  sdk.body.children.reverse();
+  sdk.selectText(other, "Second");
+  // The drag-select's own click, which the SDK swallows.
+  sdk.click(other);
+  sdk.queue("Fix this wording");
+  sdk.sendChromeMessage({ type: "lavish:queuedAnchors", selectors: [elementNote.prompt.selector] });
+  const cardsBefore = sdk.cards().length;
+
+  sdk.click(other);
+
+  assert.notEqual(sdk.posted.at(-1)?.type, "lavish:editQueuedAnchor", "the text note reopened another element's note");
+  assert.equal(sdk.cards().length, cardsBefore + 1);
+});
+
+// Once a queued note's element is removed from the page, a different element that
+// now matches its stored selector must not reopen that note; it opens a fresh card instead.
+test("a queued note whose element was removed does not reopen on the element now matching its selector", () => {
+  const sdk = bootSdk({ structuralQueries: true });
+  const paragraph = appendTo(sdk.body, cell("p", "Just prose"));
+  sdk.click(paragraph);
+  const queued = sdk.queue("Reword this");
+  paragraph.isConnected = false;
+  sdk.body.children.splice(sdk.body.children.indexOf(paragraph), 1);
+  const other = appendTo(sdk.body, cell("p", "Other text"));
+  sdk.sendChromeMessage({ type: "lavish:queuedAnchors", selectors: [queued.prompt.selector] });
+  const cardsBefore = sdk.cards().length;
+
+  sdk.click(other);
+
+  assert.notEqual(sdk.posted.at(-1)?.type, "lavish:editQueuedAnchor", "another element reopened the note");
+  assert.equal(sdk.cards().length, cardsBefore + 1);
+});
+
+// After a reload the page has no record of which element a note came from, so its selector only
+// reopens it when that selector names exactly one element, the one clicked.
+test("after a reload a queued selector reopens its note only when it names exactly the clicked element", () => {
+  const sdk = bootSdk({ structuralQueries: true });
+  const first = appendTo(sdk.body, cell("p", "Just prose"));
+  appendTo(sdk.body, cell("p", "Just prose"));
+  sdk.sendChromeMessage({ type: "lavish:queuedAnchors", selectors: ["body > p"] });
+  const cardsBefore = sdk.cards().length;
+
+  sdk.click(first);
+
+  assert.notEqual(sdk.posted.at(-1)?.type, "lavish:editQueuedAnchor", "an ambiguous selector reopened the note");
+  assert.equal(sdk.cards().length, cardsBefore + 1);
+});
+
+// Deep repeated structure can climb past 300 chars. The queued prompt keeps the whole
+// selector, it still names only the clicked element, and a click on it reopens the note.
+test("a selector longer than 300 chars is queued whole and still reopens its note", () => {
+  const sdk = bootSdk({ structuralQueries: true });
+  const images = [];
+  for (let index = 0; index < 2; index += 1) {
+    let node = appendTo(sdk.body, createElement("section"));
+    for (let depth = 0; depth < 60; depth += 1) node = appendTo(node, createElement("div"));
+    images.push(appendTo(node, createElement("img")));
+  }
+  sdk.click(images[1]);
+  const queued = sdk.queue("Swap this photo");
+
+  assert.ok(queued.prompt.selector.length > 300, `selector is ${queued.prompt.selector.length} chars`);
+  assert.deepEqual(queryChildChain(sdk.body.parentElement, queued.prompt.selector), [images[1]]);
+
+  sdk.sendChromeMessage({ type: "lavish:queuedAnchors", selectors: [queued.prompt.selector] });
+  sdk.click(images[1]);
+  assert.equal(sdk.posted.at(-1).type, "lavish:editQueuedAnchor");
+  assert.equal(sdk.posted.at(-1).selector, queued.prompt.selector);
+});
+
+// A Mermaid node's target carries its own selector, so snapshot() must not build
+// that one either; tag and text still come from the node.
+test("snapshot does not query the document for a diagram node's selector", () => {
+  const sdk = bootSdk({ structuralQueries: true });
+  buildMermaidNode(sdk);
+  Object.defineProperty(sdk.Element, Symbol.hasInstance, { value: (value) => Boolean(value?.tagName) });
+  const queries = [];
+  const realQuery = sdk.document.querySelectorAll;
+  sdk.document.querySelectorAll = (selector) => {
+    queries.push(selector);
+    return realQuery(selector);
+  };
+
+  sdk.sendChromeMessage({ type: "lavish:requestSnapshot", snapshot_request_id: "s-1" });
+
+  const response = sdk.posted.at(-1);
+  assert.equal(response.type, "lavish:snapshot");
+  assert.match(response.snapshot, /mermaid-node/);
+  assert.match(response.snapshot, /Start/);
+  assert.deepEqual(queries, []);
+});
+
+test("setDocumentMeta posts the title and icon the page asked for, stamped with the load token", () => {
+  const sdk = bootSdk();
+  sdk.api.setDocumentMeta({ title: "(1) Board", icon: "data:image/svg+xml,<svg/>" });
+  const message = sdk.posted.find((entry) => entry.type === "lavish:documentMeta");
+  assert.deepEqual(
+    { ...message },
+    {
+      type: "lavish:documentMeta",
+      title: "(1) Board",
+      icon: "data:image/svg+xml,<svg/>",
+      artifact_load_token: "load-token",
+    },
+  );
+});
+
+test("setDocumentMeta forwards null to restore, omits unset fields and drops non-strings", () => {
+  const sdk = bootSdk();
+  sdk.api.setDocumentMeta({ title: null });
+  sdk.api.setDocumentMeta({ icon: 42, title: { toString: () => "x" } });
+  sdk.api.setDocumentMeta();
+  const messages = sdk.posted.filter((entry) => entry.type === "lavish:documentMeta");
+  assert.deepEqual(
+    messages.map((entry) => JSON.parse(JSON.stringify({ title: entry.title, icon: entry.icon }))),
+    [{ title: null }, {}, {}],
   );
 });

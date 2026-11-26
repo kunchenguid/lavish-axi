@@ -38,7 +38,9 @@ import {
 import * as artifactRevisions from "./artifact-revisions.js";
 import * as mermaidNode from "./mermaid-node.js";
 import * as tableCellHelpers from "./table-cell.js";
-import { extractMermaidSources, mermaidSourceHash } from "./mermaid-source.js";
+import { extractMermaidSources, whiteboardSourceHash } from "./mermaid-source.js";
+import { createExcalidrawLibraryCache, excalidrawLibrariesDir } from "./whiteboard-library-store.js";
+import { parseLibraryIconDirectives } from "./whiteboard-libraries.js";
 import {
   isValidDiagramIndex,
   isValidWhiteboardKey,
@@ -70,6 +72,7 @@ import {
   stateId,
 } from "./paths.js";
 import { detectTailscale } from "./tailscale.js";
+import { artifactTreeRoot, isArtifactPathError, isHtmlPath, resolveAllowedArtifactFile } from "./artifact-path.js";
 import { canonicalFile, SessionStore, sessionKey } from "./session-store.js";
 import { AsyncMutex } from "./async-mutex.js";
 import { generateSharePassword } from "./share-password.js";
@@ -122,7 +125,7 @@ const WEBSOCKET_CLOSE_GRACE_MS = 250;
 // suppresses idle shutdown and makes presence wrong. Reaped on the next heartbeat after one
 // unanswered ping.
 const LIVE_EVENT_HEARTBEAT_MS = 30_000;
-const BROWSER_DISCONNECT_GRACE_MS = 10_000;
+const DEFAULT_BROWSER_DISCONNECT_GRACE_MS = 10_000;
 // An escaped popup can navigate to an artifact-owned HTML or SVG asset on the
 // server origin. Keep every artifact response sandboxed at the response layer
 // so active documents stay opaque-origin even when they are top-level.
@@ -266,7 +269,22 @@ export function resolveIdleTimeoutMs(env = process.env) {
   if (raw === "0" || raw.toLowerCase() === "off") return null;
   const value = Number(raw);
   if (!Number.isFinite(value) || value <= 0) return DEFAULT_IDLE_TIMEOUT_MS;
-  return value;
+  return Math.min(value, 2147483647);
+}
+
+// How long an active poll waits for a review page to reconnect after the last one drops before it
+// returns browser_disconnected. A phone that locks or backgrounds the tab drops its socket, so the
+// 10s default can be too short there. Set LAVISH_AXI_DISCONNECT_GRACE_MS to a custom millisecond
+// budget, or to 0/off so a disconnect never releases the poll (only feedback, an end, or its own
+// timeout does). Both resolvers clamp to 2147483647 ms, setTimeout's maximum; a larger delay would
+// overflow and fire after about 1 ms.
+export function resolveBrowserDisconnectGraceMs(env = process.env) {
+  const raw = env.LAVISH_AXI_DISCONNECT_GRACE_MS?.trim();
+  if (raw === undefined || raw === "") return DEFAULT_BROWSER_DISCONNECT_GRACE_MS;
+  if (raw === "0" || raw.toLowerCase() === "off") return null;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) return DEFAULT_BROWSER_DISCONNECT_GRACE_MS;
+  return Math.min(value, 2147483647);
 }
 
 /**
@@ -281,7 +299,7 @@ export async function serve({
   log = null,
   pollHeartbeatMs = 15_000,
   liveEventHeartbeatMs = LIVE_EVENT_HEARTBEAT_MS,
-  browserDisconnectGraceMs = BROWSER_DISCONNECT_GRACE_MS,
+  browserDisconnectGraceMs = resolveBrowserDisconnectGraceMs(env),
   idleTimeoutMs = resolveIdleTimeoutMs(),
   host = bindHost(env),
   hosts,
@@ -312,6 +330,7 @@ export async function serve({
   });
   const activeTailscaleNetwork = tailscaleNetworkKey(tailscale);
   const serverStateId = stateId(stateFile);
+  const serverProcessId = crypto.randomUUID();
   let tailscalePhoneReady = false;
   let tailscaleDetectionWarning = typeof tailscale?.warning === "string" ? tailscale.warning : "";
   // Requested addresses that have not bound yet, with the last error for each. Background recovery
@@ -369,7 +388,17 @@ export async function serve({
   // One listener per event scales independently of the number of open review tabs and avoids the
   // EventEmitter listener warning the former one-listener-per-SSE-client design reached at only a
   // few boards.
-  events.on("reload", (key) => broadcastLiveEvent("reload", key));
+  events.on("reload", (key) => {
+    broadcastLiveEvent("reload", key);
+    // Working (docs/delivery-acks.md): a save after a delivery is the agent acting on what it was
+    // handed. The store writes nothing when no delivered, unanswered note exists.
+    store
+      .markWorking(key)
+      .then((session) => {
+        if (session) events.emit("chat-sync", key, session);
+      })
+      .catch((error) => writeLog(`[lavish] working stamp after reload failed: ${error?.message || error}`));
+  });
   // The transcript the chrome renders is computed here (src/chat-messages.js): agent text ships
   // with its rendered html, user entries ship as text with their anchor, never as html.
   events.on("agent-reply", (key, entry) => broadcastLiveEvent("agent-reply", key, entry));
@@ -396,6 +425,7 @@ export async function serve({
 
   function scheduleBrowserDisconnect(key) {
     clearBrowserDisconnectTimer(key);
+    if (browserDisconnectGraceMs === null) return;
     if (shuttingDown || hasLiveEventClient(key) || !activePolls.has(key)) return;
     const timer = setTimeout(() => {
       browserDisconnectTimers.delete(key);
@@ -510,6 +540,28 @@ export async function serve({
   function finishFeedbackDelivery(key, result) {
     if (result.status !== "feedback") return;
     markFeedbackDelivered(key, activePolls, deliveredFeedback, events);
+    // The take already stamped the batch Seen in state.json (docs/delivery-acks.md); tell the open
+    // tabs only now, on the path that is about to write the response, never from the destructive
+    // take itself, so a tab is not told Seen for a batch a disconnect is about to put back.
+    void publishChatSync(key);
+  }
+
+  async function publishChatSync(key) {
+    try {
+      const session = await store.findByKey(key);
+      if (session) events.emit("chat-sync", key, session);
+    } catch (error) {
+      writeLog(`[lavish] chat-sync after delivery failed: ${error?.message || error}`);
+    }
+  }
+
+  // What the agent receives. `delivery_seq` is the store's own bookkeeping for undoing a take's Seen
+  // stamps on a closed poll; it means nothing to an agent and stays off the wire.
+  function agentFacingFeedback(result) {
+    if (!result || result.status !== "feedback" || !("delivery_seq" in result)) return result;
+    const rest = { ...result };
+    delete rest.delivery_seq;
+    return rest;
   }
 
   // `takeFeedback` is destructive: it clears the batch from `state.json` before anything is
@@ -535,6 +587,8 @@ export async function serve({
           dom_snapshot: result.dom_snapshot || "",
           prompts,
           ...(Array.isArray(result.artifact_failures) ? { artifact_failures: result.artifact_failures } : {}),
+          // Lets the store take this take's Seen stamps off again (docs/delivery-acks.md).
+          ...(Number.isInteger(result.delivery_seq) ? { delivery_seq: result.delivery_seq } : {}),
         },
         {
           restore: true,
@@ -565,7 +619,7 @@ export async function serve({
         `[lavish] closed poll feedback restore failed; the batch was lost: ${restoreError?.message || restoreError}`,
       );
     } else if (persistedNothing) {
-      writeLog("[lavish] closed poll feedback restore was refused; nothing was persisted and the batch was lost");
+      writeLog("[lavish] closed poll feedback restore was refused; nothing was re-queued and the batch was lost");
     } else if (!restoredPrompts || JSON.stringify(restoredPrompts) !== JSON.stringify(prompts) || !failuresRestored) {
       writeLog("[lavish] closed poll feedback restore was incomplete; delivery was not marked");
     }
@@ -573,9 +627,14 @@ export async function serve({
       (Array.isArray(restoredPrompts) && restoredPrompts.length > 0) ||
       (Array.isArray(restoredFailures) && restoredFailures.length > 0);
     if (pendingAfterRestore) events.emit("feedback", key);
+    // A tab that saw the batch stamped Seen between the take and this restore learns it is not -
+    // a refused restore included, which still takes the stamps off.
+    await publishChatSync(key);
   }
   // Whiteboard sidecar files live next to state.json, keyed by session + diagram.
   const whiteboardStateRoot = path.dirname(stateFile);
+  const loadExcalidrawLibraries = createExcalidrawLibraryCache();
+  const libraryDir = excalidrawLibrariesDir(whiteboardStateRoot);
 
   // DNS-rebinding guard. isSameOriginRequest (used on /share and the whiteboard
   // write routes) stops classic cross-origin CSRF but NOT DNS rebinding: a page
@@ -632,6 +691,13 @@ export async function serve({
       message: "This review session does not exist. Return to your agent and open the session URL it printed.",
       workingUrl: workingUrlFor(req, { includeSessionPath: false }),
     });
+  }
+
+  // Pre-fix state.json can still name a non-HTML path. Never read that file back to a caller.
+  function refuseNonHtmlArtifact(session, res) {
+    if (isHtmlPath(session.file)) return false;
+    res.status(403).send("Forbidden");
+    return true;
   }
 
   if (!allowAnyHostname) {
@@ -713,6 +779,7 @@ export async function serve({
       app: "lavish-axi",
       version,
       state_id: serverStateId,
+      process_id: serverProcessId,
       state_dir: path.dirname(stateFile),
       // Where this process is listening and every address it was asked to serve (bound or still
       // retrying). The CLI uses both to find one daemon per port whatever host it was configured
@@ -749,7 +816,7 @@ export async function serve({
 
   app.post("/api/sessions", async (req, res, next) => {
     try {
-      const file = await canonicalFile(req.body.file);
+      const file = await resolveAllowedArtifactFile(req.body?.file);
       const key = sessionKey(file);
       const reopen = Boolean(req.body.reopen);
       const existing = await store.findByKey(key);
@@ -786,13 +853,21 @@ export async function serve({
         ...networkWarningField(),
       });
     } catch (error) {
+      if (isArtifactPathError(error)) {
+        res.status(error.statusCode).json({
+          status: "error",
+          code: error.code,
+          error: error.message,
+        });
+        return;
+      }
       next(error);
     }
   });
 
-  async function publishAgentReply(key, text) {
-    const session = await store.addAgentReply(key, text);
-    if (!session) return null;
+  async function publishAgentReply(key, text, { requireOpen = false } = {}) {
+    const session = await store.addAgentReply(key, text, { requireOpen });
+    if (!session || (requireOpen && session.status === "ended")) return session;
     const lastEntry = session.chat?.at(-1);
     const entry = serializeChat([
       lastEntry?.role === "agent" ? lastEntry : { role: "agent", text, at: session.updated_at },
@@ -919,7 +994,7 @@ export async function serve({
         releasePollListener(holder, activePolls, deliveredFeedback, events);
         if (immediate.session_ended) clearFeedbackDelivery(key, activePolls, deliveredFeedback, events);
         detachRequestClose();
-        res.json(immediate);
+        res.json(agentFacingFeedback(immediate));
         return;
       }
       if (holder.replaced) {
@@ -1000,10 +1075,11 @@ export async function serve({
             return;
           }
           finishFeedbackDelivery(key, responseResult);
+          const agentResponse = agentFacingFeedback(responseResult);
           if (streamHeartbeat) {
-            res.end(JSON.stringify(responseResult));
+            res.end(JSON.stringify(agentResponse));
           } else {
-            res.json(responseResult);
+            res.json(agentResponse);
           }
         } finally {
           cleanup();
@@ -1244,9 +1320,15 @@ export async function serve({
 
   app.post("/api/:key/agent-reply", async (req, res, next) => {
     try {
-      const session = await publishAgentReply(req.params.key, String(req.body?.text || ""));
+      const session = await publishAgentReply(req.params.key, String(req.body?.text || ""), {
+        requireOpen: true,
+      });
       if (!session) {
         res.status(404).json({ error: "session not found" });
+        return;
+      }
+      if (session.status === "ended") {
+        res.status(409).json({ status: "ended", ended_by: session.ended_by });
         return;
       }
       res.json({ status: "sent" });
@@ -1265,6 +1347,7 @@ export async function serve({
         res.status(404).json({ error: "session not found" });
         return;
       }
+      if (refuseNonHtmlArtifact(session, res)) return;
       const source = await readFile(session.file, "utf8");
       const root = path.dirname(session.file);
       const { html, warnings } = await buildSelfContainedHtml(source, {
@@ -1304,6 +1387,7 @@ export async function serve({
         res.status(404).json({ error: "session not found" });
         return;
       }
+      if (refuseNonHtmlArtifact(session, res)) return;
       const body = req.body || {};
       // The password is generated here rather than in the chrome because chrome-client.js is
       // served raw and cannot import modules: a browser-side generator would be a second copy of
@@ -1392,6 +1476,7 @@ export async function serve({
         return;
       }
       const session = chromeLoad.session;
+      if (refuseNonHtmlArtifact(session, res)) return;
       await watchSession(session, watchers, events, logEvent, reloadDebounceMs);
       const artifactHtml = await readFile(session.file, "utf8").catch(() => "");
       const { faviconTag, title } = extractArtifactHead(artifactHtml);
@@ -1480,6 +1565,7 @@ export async function serve({
         sendSessionNotFound(req, res);
         return;
       }
+      if (refuseNonHtmlArtifact(beforeRead.session, res)) return;
       if (!beforeRead.valid) {
         res
           .status(409)
@@ -1516,7 +1602,8 @@ export async function serve({
         sendSessionNotFound(req, res);
         return;
       }
-      const root = path.dirname(session.file);
+      if (refuseNonHtmlArtifact(session, res)) return;
+      const root = artifactTreeRoot(session.file);
       const file = await resolveArtifactAsset(root, assetPath);
       if (!file) {
         res.status(403).send("Forbidden");
@@ -1653,13 +1740,37 @@ export async function serve({
         res.status(404).json({ error: "session not found" });
         return;
       }
+      if (refuseNonHtmlArtifact(session, res)) return;
       const html = await readFile(session.file, "utf8").catch(() => "");
-      const sources = extractMermaidSources(html).map(({ index, source }) => ({
+      const extracted = extractMermaidSources(html);
+      const usesLibraries = extracted.some(({ source }) => parseLibraryIconDirectives(source).length > 0);
+      const snapshot = usesLibraries ? await loadExcalidrawLibraries(libraryDir) : null;
+      const libraries = snapshot ? snapshot.libraries : [];
+      const sources = extracted.map(({ index, source }) => ({
         index,
         source,
-        hash: mermaidSourceHash(source),
+        hash: whiteboardSourceHash(source, libraries),
       }));
-      res.json({ sources });
+      // The chrome compares this with /api/whiteboard-libraries' version: a
+      // library file that changed between the two requests means the frame's
+      // libraries do not match these hashes.
+      res.json(snapshot ? { sources, libraries_version: snapshot.version } : { sources });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // User-supplied Excalidraw libraries for every whiteboard's library panel and
+  // for `%% lavish-icon` nodes. Read-only: Lavish never writes that directory.
+  app.get("/api/whiteboard-libraries", async (req, res, next) => {
+    try {
+      if (hasPresentOriginOrReferer(req) && !isSameOriginRequest(req, allowedHostnames, allowAnyHostname)) {
+        res.status(403).json({ error: "cross-origin whiteboard library request rejected" });
+        return;
+      }
+      const { libraries, version } = await loadExcalidrawLibraries(libraryDir);
+      res.setHeader("cache-control", "no-store");
+      res.json({ libraries: libraries.map(({ id, items }) => ({ id, items })), version });
     } catch (error) {
       next(error);
     }
@@ -2581,9 +2692,9 @@ function optionalBodyString(value) {
 }
 
 // Confines an asset request lexically first, then - like export-bundle.js's guardedRead -
-// resolves the real (symlink-followed) path and refuses anything that escapes the artifact
-// directory, so a symlink placed beside the artifact can't make this route serve an outside
-// file (e.g. ~/.ssh/id_rsa).
+// resolves the real (symlink-followed) path and refuses anything that escapes the session's
+// artifact tree (the HTML file's directory), so a symlink placed beside the artifact can't
+// make this route serve an outside file (e.g. ~/.ssh/id_rsa).
 export async function resolveArtifactAsset(root, assetPath) {
   const file = path.resolve(root, assetPath);
   const relative = path.relative(root, file);
@@ -2787,6 +2898,8 @@ const chromeIcons = {
   ),
   reveal: chromeIcon('<path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/>', 13),
   dismiss: chromeIcon('<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>', 13),
+  // The desktop conversation-panel toggle: a window with its right-hand column marked off.
+  sidebar: chromeIcon('<rect x="3" y="4" width="18" height="16" rx="2"/><line x1="15" y1="4" x2="15" y2="20"/>'),
   // The mobile conversation sheet's only chevron: CSS rotates it when the sheet is open.
   chevronUp: chromeIcon('<polyline points="6 15 12 9 18 15"/>', 18, 2),
 };
@@ -2882,8 +2995,11 @@ export function extractArtifactHead(html) {
     faviconTag = `<link rel="icon" href="${safeHref}">`;
   }
   let title = "";
-  const titleMatch = head.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-  if (titleMatch) title = titleMatch[1].replace(/\s+/g, " ").trim();
+  // A comment may mention <title> (templates do), and script/style text is raw, so a "<!--" there is
+  // no comment. Skip complete comments and whole script/style elements; the first <title> left wins.
+  const titleScan = /<!--[\s\S]*?-->|<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>|<title[^>]*>([\s\S]*?)<\/title>/gi;
+  const titleMatch = [...head.matchAll(titleScan)].find((match) => match[2] !== undefined);
+  if (titleMatch) title = titleMatch[2].replace(/\s+/g, " ").trim();
   return { faviconTag, title };
 }
 
@@ -3001,8 +3117,8 @@ ${faviconTag}
 <link rel="stylesheet" href="/chrome.css">
 </head>
 <body class="${bodyClass}">
-<div class="bar"><div class="brand"><span class="brand-mark">Lavish</span><span class="brand-support">Editor</span></div><div class="spacer" aria-hidden="true"></div><div class="warnings-wrap" id="warningsWrap" hidden><button class="warnings-button" id="warningsButton" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="warningsDrawer">${chromeIcons.warning}<span class="warnings-count" id="warningsCount">0</span></button><div class="menu warnings-drawer" id="warningsDrawer" role="dialog" aria-labelledby="warningsTitle" aria-describedby="warningsSummary" hidden><div class="warnings-head"><h2 class="warnings-title" id="warningsTitle">Layout issues</h2><p class="warnings-summary" id="warningsSummary"></p></div><div class="warnings-toolbar"><label class="warnings-selectall"><input type="checkbox" id="warningsSelectAll"><span>Select all</span></label><span class="warnings-selected" id="warningsSelected" role="status" aria-live="polite"></span></div><div class="warnings-list" id="warningsList"></div><div class="warnings-foot"><p class="warnings-note">Queueing sends a repair request with your next feedback. An issue is marked resolved only after a newer artifact load and a complete check at the same viewport no longer finds it.</p><button class="button" id="warningsQueueButton" type="button" disabled>Queue selected fixes</button></div></div></div><div class="revisions-wrap" id="revisionsWrap" hidden><button class="revisions-button" id="revisionsButton" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="revisionsDrawer"><span class="revisions-button-text">Revisions</span><span class="revisions-count" id="revisionsCount">0</span></button><div class="menu revisions-drawer" id="revisionsDrawer" role="dialog" aria-labelledby="revisionsTitle" aria-describedby="revisionsSummary" hidden><div class="revisions-head"><h2 class="revisions-title" id="revisionsTitle">Revisions</h2><p class="revisions-summary" id="revisionsSummary"></p></div><div class="revisions-list" id="revisionsList"></div><div class="revisions-foot"><p class="revisions-note">The agent declares these in the artifact itself. Reveal flashes the next block it marked for that revision; nothing about the page is restyled, so the saved file still looks the way it does here.</p></div></div></div><button class="annotate-switch" id="annotation" type="button" aria-pressed="true" title="${escapeHtml(modeToggleHint)}"><span class="switch-track" aria-hidden="true"><span class="switch-knob"></span></span><span>Annotate</span></button><div class="more-wrap" id="moreWrap"><button class="more-button" id="moreButton" type="button" title="More" aria-haspopup="menu" aria-expanded="false">${chromeIcons.more}</button><div class="menu more-menu" id="moreMenu" hidden><div class="menu-head"><div class="menu-label">Editing</div><button class="menu-file" id="copyPath" type="button" title="Copy path · ${escapeHtml(session.file)}">${chromeIcons.file}<span class="menu-file-text"><span class="path-head">${escapeHtml(pathHead)}</span><span class="path-tail">${escapeHtml(pathTail)}</span></span><span class="copy-hint" id="copyHint"><span class="icon-copy">${chromeIcons.copy}</span><span class="icon-check">${chromeIcons.check}</span><span id="copyHintText">Copy</span></span></button></div><div class="menu-rule"></div><button class="menu-item" id="reloadArtifact" type="button">${chromeIcons.refresh}<span>Reload artifact</span></button><button class="menu-item" id="copySnapshot" type="button">${chromeIcons.camera}<span>Copy DOM snapshot</span></button><button class="menu-item" id="exportArtifact" type="button">${chromeIcons.download}<span>Export standalone HTML</span></button><button class="menu-item" id="shareArtifact" type="button">${chromeIcons.globe}<span>Publish link</span></button><div class="menu-rule"></div><button class="menu-item danger" id="end" type="button">${chromeIcons.exit}<span>End session</span></button></div></div></div>
-<div class="layout"><div class="frame"><iframe id="artifact" sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads" data-artifact-src="/artifact/${session.key}/index.html"></iframe></div><div class="panel-scrim" id="panelScrim"></div><aside class="panel" id="panel"><div class="panel-head" id="panelHead"><span class="panel-handle" aria-hidden="true"></span><div class="panel-head-row"><h2>Conversation</h2><span class="panel-summary" id="panelSummary" role="status" aria-live="polite"></span><button class="panel-toggle" id="panelToggle" type="button" aria-expanded="false" aria-controls="panel" aria-label="Show conversation">${chromeIcons.chevronUp}</button></div></div><div class="panel-scroll" id="panelScroll"><div class="chat" id="chatLog"></div><div class="chat chat-queued" id="queuedLog"></div></div><div class="composer" id="chatComposer"><div class="presence-banner handoff-banner" id="handoffBanner" hidden><span>This review is open in another Lavish tab.</span><button class="handoff-takeover" id="handoffTakeover" type="button">Take over here</button></div><div class="presence-banner handoff-banner" id="outdatedBanner" hidden><span id="outdatedText">The Lavish server this page was connected to is no longer running. Reloading will work once it is running again.</span><span class="outdated-actions"><button class="handoff-takeover" id="outdatedReload" type="button">Check and reload</button><button class="handoff-takeover" id="outdatedDismiss" type="button">Dismiss</button></span></div><div class="presence-banner" id="presenceBanner" hidden>Your agent is not listening. If this persists, ask your agent to poll for updates from Lavish.</div><textarea id="chatInput" placeholder="Write a message for the agent..."></textarea><div class="chat-attachments" id="chatAttachments"></div><div class="chat-attachment-toolbar"><button class="chat-attach" id="chatAttach" type="button">Attach images</button><input id="chatAttachInput" type="file" accept="${escapeHtml(acceptedMime.join(","))}" multiple hidden><span class="chat-attachment-notice" id="chatAttachmentNotice" role="status"></span></div><div class="send-hint" id="sendHint" hidden>Write a message or annotate an element first.</div><div class="actions" id="sendActions"><button class="button button-danger" id="sendAndEnd" type="button">${chromeIcons.exit}<span>Send &amp; End</span></button><button class="button" id="send">Send to Agent</button></div></div></aside></div>
+<div class="bar"><div class="brand"><span class="brand-mark">Lavish</span><span class="brand-support">Editor</span></div><div class="spacer" aria-hidden="true"></div><div class="warnings-wrap" id="warningsWrap" hidden><button class="warnings-button" id="warningsButton" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="warningsDrawer">${chromeIcons.warning}<span class="warnings-count" id="warningsCount">0</span></button><div class="menu warnings-drawer" id="warningsDrawer" role="dialog" aria-labelledby="warningsTitle" aria-describedby="warningsSummary" hidden><div class="warnings-head"><h2 class="warnings-title" id="warningsTitle">Layout issues</h2><p class="warnings-summary" id="warningsSummary"></p></div><div class="warnings-toolbar"><label class="warnings-selectall"><input type="checkbox" id="warningsSelectAll"><span>Select all</span></label><span class="warnings-selected" id="warningsSelected" role="status" aria-live="polite"></span></div><div class="warnings-list" id="warningsList"></div><div class="warnings-foot"><p class="warnings-note">Queueing sends a repair request with your next feedback. An issue is marked resolved only after a newer artifact load and a complete check at the same viewport no longer finds it.</p><button class="button" id="warningsQueueButton" type="button" disabled>Queue selected fixes</button></div></div></div><div class="revisions-wrap" id="revisionsWrap" hidden><button class="revisions-button" id="revisionsButton" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="revisionsDrawer"><span class="revisions-button-text">Revisions</span><span class="revisions-count" id="revisionsCount">0</span></button><div class="menu revisions-drawer" id="revisionsDrawer" role="dialog" aria-labelledby="revisionsTitle" aria-describedby="revisionsSummary" hidden><div class="revisions-head"><h2 class="revisions-title" id="revisionsTitle">Revisions</h2><p class="revisions-summary" id="revisionsSummary"></p></div><div class="revisions-list" id="revisionsList"></div><div class="revisions-foot"><p class="revisions-note">The agent declares these in the artifact itself. Reveal flashes the next block it marked for that revision; nothing about the page is restyled, so the saved file still looks the way it does here.</p></div></div></div><button class="annotate-switch" id="annotation" type="button" aria-pressed="true" title="${escapeHtml(modeToggleHint)}"><span class="switch-track" aria-hidden="true"><span class="switch-knob"></span></span><span>Annotate</span></button><button class="sidebar-toggle" id="sidebarToggle" type="button" aria-controls="panel" aria-expanded="true" aria-label="Hide conversation" title="Hide conversation">${chromeIcons.sidebar}<span class="sidebar-toggle-count" id="sidebarToggleCount" aria-hidden="true" hidden></span></button><div class="more-wrap" id="moreWrap"><button class="more-button" id="moreButton" type="button" title="More" aria-haspopup="menu" aria-expanded="false">${chromeIcons.more}</button><div class="menu more-menu" id="moreMenu" hidden><div class="menu-head"><div class="menu-label">Editing</div><button class="menu-file" id="copyPath" type="button" title="Copy path · ${escapeHtml(session.file)}">${chromeIcons.file}<span class="menu-file-text"><span class="path-head">${escapeHtml(pathHead)}</span><span class="path-tail">${escapeHtml(pathTail)}</span></span><span class="copy-hint" id="copyHint"><span class="icon-copy">${chromeIcons.copy}</span><span class="icon-check">${chromeIcons.check}</span><span id="copyHintText">Copy</span></span></button></div><div class="menu-rule"></div><button class="menu-item" id="reloadArtifact" type="button">${chromeIcons.refresh}<span>Reload artifact</span></button><button class="menu-item" id="copySnapshot" type="button">${chromeIcons.camera}<span>Copy DOM snapshot</span></button><button class="menu-item" id="exportArtifact" type="button">${chromeIcons.download}<span>Export standalone HTML</span></button><button class="menu-item" id="shareArtifact" type="button">${chromeIcons.globe}<span>Publish link</span></button><div class="menu-rule"></div><button class="menu-item danger" id="end" type="button">${chromeIcons.exit}<span>End session</span></button></div></div></div>
+<div class="layout"><div class="frame"><iframe id="artifact" sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads" data-artifact-src="/artifact/${session.key}/index.html"></iframe></div><div class="panel-scrim" id="panelScrim"></div><aside class="panel" id="panel"><div class="panel-head" id="panelHead"><span class="panel-handle" aria-hidden="true"></span><div class="panel-head-row"><h2>Conversation</h2><span class="panel-summary" id="panelSummary" role="status" aria-live="polite"></span><button class="panel-toggle" id="panelToggle" type="button" aria-expanded="false" aria-controls="panel" aria-label="Show conversation">${chromeIcons.chevronUp}</button></div></div><div class="panel-scroll" id="panelScroll"><div class="chat" id="chatLog"></div><div class="chat chat-queued" id="queuedLog"></div></div><div class="composer" id="chatComposer"><div class="presence-banner handoff-banner" id="handoffBanner" hidden><span>This review is open in another Lavish tab. Unsent answers stay in the tab or window where you entered them; taking over in another window does not bring them along.</span><button class="handoff-takeover" id="handoffTakeover" type="button">Take over here</button></div><div class="presence-banner handoff-banner" id="outdatedBanner" hidden><span id="outdatedText">The Lavish server this page was connected to is no longer running. Reloading will work once it is running again.</span><span class="outdated-actions"><button class="handoff-takeover" id="outdatedReload" type="button">Check and reload</button><button class="handoff-takeover" id="outdatedDismiss" type="button">Dismiss</button></span></div><div class="presence-banner" id="presenceBanner" hidden>Your agent is not listening. If this persists, ask your agent to poll for updates from Lavish.</div><textarea id="chatInput" placeholder="Write a message for the agent..."></textarea><div class="chat-attachments" id="chatAttachments"></div><div class="chat-attachment-toolbar"><button class="chat-attach" id="chatAttach" type="button">Attach images</button><input id="chatAttachInput" type="file" accept="${escapeHtml(acceptedMime.join(","))}" multiple hidden><span class="chat-attachment-notice" id="chatAttachmentNotice" role="status"></span></div><div class="send-hint" id="sendHint" hidden>Nothing queued in this tab. Unsent answers stay in the tab or window where you entered them; taking over in another window does not bring them along.</div><div class="actions" id="sendActions"><button class="button button-danger" id="sendAndEnd" type="button">${chromeIcons.exit}<span>Send &amp; End</span></button><button class="button" id="send">Send to Agent</button></div></div></aside></div>
 <div class="share-overlay" id="shareDialog" role="dialog" aria-modal="true" aria-labelledby="shareTitleText" hidden><form class="share-card" id="shareForm"><div class="share-head"><div><div class="share-kicker">Publish to <a class="share-link" href="https://ht-ml.app" target="_blank" rel="noopener noreferrer">ht-ml.app</a></div><h2 id="shareTitleText">Publish artifact</h2></div><button class="share-close" id="shareClose" type="button" aria-label="Close publish dialog"><svg width="14" height="14" viewBox="0 0 10 10" fill="none" aria-hidden="true" focusable="false"><path d="M1 1L9 9M9 1L1 9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button></div><p class="share-note">ht-ml.app is a separate, third-party hosting service, not part of Lavish. Publishing sends this artifact to its servers.</p><p class="share-copy">This uploads this artifact to ht-ml.app with local assets inlined. Without a password, the page is PUBLIC and anyone with the link can open it. With a password, the page is PRIVATE and viewers must supply the password to view.</p><p class="share-note">Do not publish secrets. The Lavish annotation SDK is not included.</p><div class="share-grid"><label class="share-check"><input id="shareGenerate" type="checkbox"><span>Generate a password (makes this page private)</span></label><label>Password (optional)<input id="sharePassword" name="password" type="password" autocomplete="new-password" placeholder="Leave blank for a public page"></label></div><div class="share-status" id="shareStatus" role="status"></div><div class="share-result" id="shareResult" hidden><label id="shareUrlResult">Share URL<div class="share-copy-row"><input id="shareUrl" readonly><button class="share-copy-btn" id="copyShareUrl" type="button">Copy URL</button></div></label><label id="sharePasswordResult" hidden>Password (shared secret)<div class="share-copy-row"><input id="sharePasswordOut" readonly><button class="share-copy-btn" id="copySharePassword" type="button">Copy password</button></div></label><label id="shareSiteIdResult" hidden>Site ID<div class="share-copy-row"><input id="shareSiteId" readonly><button class="share-copy-btn" id="copyShareSiteId" type="button">Copy site ID</button></div></label><label id="shareUpdateKeyResult">Update key (secret)<div class="share-copy-row"><input id="shareUpdateKey" readonly><button class="share-copy-btn" id="copyUpdateKey" type="button">Copy key</button></div></label><p class="share-note" id="shareUpdateKeyNote">Keep the update key private. ht-ml.app returns it once and it is the only way to update this page later; the service has no delete. Republish this page&#39;s HTML with <code>lavish-axi share &lt;file&gt; --site &lt;site id&gt; --update-key &lt;key&gt;</code>, and add <code>--private</code> to also lock it behind a new generated password.</p></div><div class="share-actions"><button class="share-cancel" id="shareCancel" type="button">Cancel</button><button class="button" id="sharePublish" type="submit">Publish</button></div></form></div>
 <div class="ended-overlay layout-gate-overlay" id="layoutGateOverlay"${layoutGateHidden}><div class="ended-card"><div class="ended-title" id="layoutGateTitle">Checking layout.<br>One moment.</div><p class="ended-copy" id="layoutGateCopy">Lavish is waiting for fonts and final geometry before revealing this artifact.</p><button class="button ended-action" id="layoutGateAction" type="button">Show anyway</button><button class="button ended-action layout-gate-bypass" id="layoutGateBypass" type="button" hidden>Show anyway</button></div></div>
 <div class="ended-overlay" id="endedOverlay" hidden><div class="ended-card"><div class="ended-title">Session ended.<br>Return to your agent to continue.</div><p class="ended-copy">${escapeHtml(session.file)}</p></div></div>

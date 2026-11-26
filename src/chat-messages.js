@@ -552,3 +552,90 @@ export function serializeChatSync(session) {
     chat_revision: Number.isSafeInteger(revision) && revision >= 0 ? revision : 0,
   };
 }
+
+// Delivery acks (docs/delivery-acks.md). Seen, Working, and Done are stamps on the user entry the
+// reviewer is looking at, each set from a fact the server records anyway: a poll took the batch, the
+// artifact changed afterwards, an agent reply arrived. Every helper is pure over the chat array and
+// returns whether it changed anything, so the store can skip the state.json rewrite when a reload or
+// reply finds nothing to stamp. Stamps are DELETED on revert, never nulled: a restored entry has to be
+// byte-for-byte what it was before the take, which the restore tests assert.
+// Only entries written since receipts existed take part. A transcript from before carries user
+// entries no take ever stamped, and the positional rule would read them as "this batch": the first
+// poll after an upgrade would mark months-old notes Seen today and the next reply would mark them
+// Done. `readState` marks those `receipt: "none"` once, before any new code touches the session.
+export const RECEIPT_NONE = "none";
+
+function isUserEntry(entry) {
+  return Boolean(entry) && typeof entry === "object" && entry.role === "user" && entry.receipt !== RECEIPT_NONE;
+}
+
+export function markPreReceipt(chat) {
+  let changed = false;
+  for (const entry of Array.isArray(chat) ? chat : []) {
+    if (!entry || typeof entry !== "object" || entry.role !== "user" || entry.receipt === RECEIPT_NONE) continue;
+    entry.receipt = RECEIPT_NONE;
+    changed = true;
+  }
+  return changed;
+}
+
+// `takeFeedback` drains every pending prompt under the store lock, so the undelivered user entries
+// at that moment are exactly the batch being handed over - no id matching needed (the stored prompts
+// lost their `prompt_id` at queue time). `seq` ties the stamps to one take so a restore can undo it.
+export function stampDelivered(chat, seq, at) {
+  let changed = false;
+  for (const entry of Array.isArray(chat) ? chat : []) {
+    if (!isUserEntry(entry) || entry.delivered_at) continue;
+    entry.delivered_at = String(at);
+    entry.delivered_seq = seq;
+    changed = true;
+  }
+  return changed;
+}
+
+// Undo one take's stamps. A note queued after that take carries no stamp and is left alone; it is
+// delivered, and stamped, by the next take along with the restored ones. Working and Done stamps that
+// landed on the batch in the window are dropped too: nothing reached an agent.
+export function unstampDelivery(chat, seq) {
+  let changed = false;
+  for (const entry of Array.isArray(chat) ? chat : []) {
+    if (!isUserEntry(entry) || entry.delivered_seq !== seq) continue;
+    delete entry.delivered_at;
+    delete entry.delivered_seq;
+    delete entry.working_at;
+    delete entry.done_at;
+    changed = true;
+  }
+  return changed;
+}
+
+// Working and Done are evidence about the current review round only. `closedSeq` is the last take
+// of the rounds that ended before the session was reopened; a note such a round left at Seen stays
+// there, because an edit or reply in a later round is about that round's notes, not this one.
+function isOpenDelivery(entry, closedSeq) {
+  return isUserEntry(entry) && Boolean(entry.delivered_at) && !entry.done_at && entry.delivered_seq > closedSeq;
+}
+
+// The artifact changed after a delivery: the agent is working on what it was handed. Only the first
+// change after delivery is evidence; later saves add nothing. An entry already answered stays Done.
+export function stampWorking(chat, at, closedSeq = 0) {
+  let changed = false;
+  for (const entry of Array.isArray(chat) ? chat : []) {
+    if (!isOpenDelivery(entry, closedSeq) || entry.working_at) continue;
+    entry.working_at = String(at);
+    changed = true;
+  }
+  return changed;
+}
+
+// An agent reply answers everything the agent has seen this round. An entry that was sent but never
+// delivered is not done - the agent has not read it - and stays for the next poll.
+export function stampDone(chat, at, closedSeq = 0) {
+  let changed = false;
+  for (const entry of Array.isArray(chat) ? chat : []) {
+    if (!isOpenDelivery(entry, closedSeq)) continue;
+    entry.done_at = String(at);
+    changed = true;
+  }
+  return changed;
+}

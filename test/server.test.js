@@ -30,6 +30,7 @@ import {
   readAttachmentUploadBody,
   resolveArtifactAsset,
   resolveDesignAssetPath,
+  resolveBrowserDisconnectGraceMs,
   resolveIdleTimeoutMs,
   resolveWatchTarget,
   serve,
@@ -1067,6 +1068,17 @@ test("chrome shows agent working state when a previous poll has released", async
   assert.match(js, /spinner/);
 });
 
+test("takeover banner explains draft ownership before offering takeover", () => {
+  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
+  const banner = html.match(/id="handoffBanner"[^>]*>([\s\S]*?)<\/div>/)?.[1] || "";
+  assert.match(
+    banner,
+    /<span>This review is open in another Lavish tab\. Unsent answers stay in the tab or window where you entered them; taking over in another window does not bring them along\.<\/span>/,
+  );
+  assert.doesNotMatch(banner, /switch back there/i);
+  assert.match(banner, /id="handoffTakeover"[^>]*>Take over here/);
+});
+
 test("composer offers two always-visible top-level send actions", async () => {
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
   const css = await chromeCssSource();
@@ -1075,7 +1087,7 @@ test("composer offers two always-visible top-level send actions", async () => {
   assert.match(html, /class="button button-danger" id="sendAndEnd"[^<]*>.*Send &amp; End</);
   assert.match(
     html,
-    /<div class="send-hint" id="sendHint" hidden>Write a message or annotate an element first\.<\/div><div class="actions" id="sendActions"><button class="button button-danger" id="sendAndEnd" type="button">.*<button class="button" id="send">Send to Agent<\/button><\/div>/,
+    /<div class="send-hint" id="sendHint" hidden>Nothing queued in this tab\. Unsent answers stay in the tab or window where you entered them; taking over in another window does not bring them along\.<\/div><div class="actions" id="sendActions"><button class="button button-danger" id="sendAndEnd" type="button">.*<button class="button" id="send">Send to Agent<\/button><\/div>/,
   );
   assert.doesNotMatch(html, /id="sendCaret"/);
   assert.doesNotMatch(html, /id="sendMenu"/);
@@ -2378,6 +2390,140 @@ test("/artifact still rejects lexical .. traversal that reaches the server unnor
   } finally {
     await server.close();
     await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("/api/sessions refuses a non-HTML path so its directory cannot become an artifact tree", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const secret = path.join(dir, "secret.txt");
+  await writeFile(secret, "outside-secret\n");
+  await writeFile(path.join(dir, ".env"), "hidden-secret\n");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const created = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: secret }),
+    });
+    const body = await created.json();
+    assert.equal(created.status, 400);
+    assert.equal(body.status, "error");
+    assert.equal(body.code, "VALIDATION_ERROR");
+    assert.match(body.error, /HTML file/);
+
+    const key = sessionKey(await canonicalFile(secret));
+    const leak = await fetch(`${base}/artifact/${key}/.env`);
+    assert.equal(leak.status, 404);
+    assert.doesNotMatch(await leak.text(), /hidden-secret/);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("/api/sessions refuses an HTML symlink to a non-HTML file", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const secret = path.join(dir, "secret.txt");
+  const decoy = path.join(dir, "decoy.html");
+  await writeFile(secret, "outside-secret\n");
+  await symlink(secret, decoy);
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const created = await fetch(`http://127.0.0.1:${server.port}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: decoy }),
+    });
+    const body = await created.json();
+    assert.equal(created.status, 400);
+    assert.equal(body.code, "VALIDATION_ERROR");
+    assert.match(body.error, /HTML file/);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("/artifact serves same-tree assets for an HTML session", async () => {
+  const parent = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const dir = path.join(parent, ".lavish");
+  const assetDir = path.join(dir, "assets");
+  const artifact = path.join(dir, "artifact.html");
+  await mkdir(dir);
+  await mkdir(assetDir);
+  await writeFile(
+    artifact,
+    '<!doctype html><html><head><link rel="stylesheet" href="assets/style.css"></head><body><a href="about.html">about</a></body></html>',
+  );
+  await writeFile(path.join(assetDir, "style.css"), "body { color: rgb(1 2 3); }\n");
+  await writeFile(path.join(dir, "about.htm"), "<!doctype html><html><body>about</body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const sessionRes = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    assert.equal(sessionRes.status, 200);
+    const session = await sessionRes.json();
+    const load = await beginArtifactLoad(base, session.key);
+    const documentResponse = await fetch(artifactLoadUrl(base, session.key, load));
+    const css = await fetch(`${base}/artifact/${session.key}/assets/style.css`);
+    const page = await fetch(`${base}/artifact/${session.key}/about.htm`);
+
+    assert.equal(documentResponse.status, 200);
+    assert.match(await documentResponse.text(), /<a href="about.html">about<\/a>/);
+    assert.equal(css.status, 200);
+    assert.equal(await css.text(), "body { color: rgb(1 2 3); }\n");
+    assert.equal(page.status, 200);
+    assert.match(await page.text(), /about/);
+  } finally {
+    await server.close();
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("leftover non-HTML sessions are refused before any session.file content read", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const secret = path.join(dir, "secret.txt");
+  await writeFile(secret, "outside-secret\n");
+  await writeFile(path.join(dir, ".env"), "hidden-secret\n");
+  const absolute = await canonicalFile(secret);
+  const key = sessionKey(absolute);
+  await writeFile(
+    path.join(dir, "state.json"),
+    `${JSON.stringify({ sessions: { [key]: { key, file: absolute, url: "http://127.0.0.1/session/test", status: "open" } } }, null, 2)}\n`,
+  );
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const documentResponse = await fetch(`${base}/artifact/${key}/index.html`);
+    const sibling = await fetch(`${base}/artifact/${key}/.env`);
+    const exported = await fetch(`${base}/api/${key}/export`);
+    const shared = await fetch(`${base}/api/${key}/share`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: base },
+      body: JSON.stringify({}),
+    });
+    const mermaid = await fetch(`${base}/api/${key}/mermaid-sources`);
+    const chrome = await fetch(`${base}/session/${key}`);
+    assert.equal(documentResponse.status, 403);
+    assert.doesNotMatch(await documentResponse.text(), /outside-secret/);
+    assert.equal(sibling.status, 403);
+    assert.doesNotMatch(await sibling.text(), /hidden-secret/);
+    assert.equal(exported.status, 403);
+    assert.doesNotMatch(await exported.text(), /outside-secret/);
+    assert.equal(shared.status, 403);
+    assert.doesNotMatch(await shared.text(), /outside-secret/);
+    assert.equal(mermaid.status, 403);
+    assert.doesNotMatch(await mermaid.text(), /outside-secret/);
+    assert.equal(chrome.status, 403);
+    assert.doesNotMatch(await chrome.text(), /outside-secret/);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
   }
 });
 
@@ -4281,6 +4427,20 @@ test("resolveIdleTimeoutMs defaults, parses, and only explicit opt-outs disable"
   assert.equal(resolveIdleTimeoutMs({ LAVISH_AXI_IDLE_TIMEOUT_MS: "-1" }), 30 * 60_000);
   assert.equal(resolveIdleTimeoutMs({ LAVISH_AXI_IDLE_TIMEOUT_MS: "30000ms" }), 30 * 60_000);
   assert.equal(resolveIdleTimeoutMs({ LAVISH_AXI_IDLE_TIMEOUT_MS: "later" }), 30 * 60_000);
+  // Node's setTimeout ceiling is 2^31-1 ms; larger delays fire after 1ms instead.
+  assert.equal(resolveIdleTimeoutMs({ LAVISH_AXI_IDLE_TIMEOUT_MS: "3000000000" }), 2 ** 31 - 1);
+});
+
+test("resolveBrowserDisconnectGraceMs defaults, parses, and only explicit opt-outs disable", () => {
+  assert.equal(resolveBrowserDisconnectGraceMs({}), 10_000);
+  assert.equal(resolveBrowserDisconnectGraceMs({ LAVISH_AXI_DISCONNECT_GRACE_MS: "" }), 10_000);
+  assert.equal(resolveBrowserDisconnectGraceMs({ LAVISH_AXI_DISCONNECT_GRACE_MS: " 120000 " }), 120_000);
+  assert.equal(resolveBrowserDisconnectGraceMs({ LAVISH_AXI_DISCONNECT_GRACE_MS: "0" }), null);
+  assert.equal(resolveBrowserDisconnectGraceMs({ LAVISH_AXI_DISCONNECT_GRACE_MS: "OFF" }), null);
+  assert.equal(resolveBrowserDisconnectGraceMs({ LAVISH_AXI_DISCONNECT_GRACE_MS: "-1" }), 10_000);
+  assert.equal(resolveBrowserDisconnectGraceMs({ LAVISH_AXI_DISCONNECT_GRACE_MS: "30000ms" }), 10_000);
+  assert.equal(resolveBrowserDisconnectGraceMs({ LAVISH_AXI_DISCONNECT_GRACE_MS: "later" }), 10_000);
+  assert.equal(resolveBrowserDisconnectGraceMs({ LAVISH_AXI_DISCONNECT_GRACE_MS: "3000000000" }), 2 ** 31 - 1);
 });
 
 async function expectDoneWithin(server, ms) {
@@ -4789,6 +4949,73 @@ test("closing the last review WebSocket releases an active poll without ending t
       (response) => response.json(),
     );
     assert.deepEqual(stillOpen, { status: "waiting" });
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("LAVISH_AXI_DISCONNECT_GRACE_MS sets the reconnect grace a served poll waits out", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({
+    env: { ...process.env, LAVISH_AXI_DISCONNECT_GRACE_MS: "20" },
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+  });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const opened = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    }).then((response) => response.json());
+    const browser = await startPresenceStream(base, opened.key);
+    assert.equal(await browser.next(), "waiting");
+    // A poll that outlives the 20ms grace but not the 10s default proves the env value was used.
+    const poll = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=1000`).then((response) =>
+      response.json(),
+    );
+    assert.equal(await browser.next(), "listening");
+    await browser.close();
+    assert.deepEqual(await poll, { status: "browser_disconnected" });
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("LAVISH_AXI_DISCONNECT_GRACE_MS=off keeps an active poll waiting after the last review disconnects", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({
+    env: { ...process.env, LAVISH_AXI_DISCONNECT_GRACE_MS: "off" },
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+  });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const opened = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    }).then((response) => response.json());
+    const browser = await startPresenceStream(base, opened.key);
+    assert.equal(await browser.next(), "waiting");
+    const poll = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=150`).then((response) =>
+      response.json(),
+    );
+    assert.equal(await browser.next(), "listening");
+    await browser.close();
+    assert.deepEqual(await poll, { status: "waiting" }, "with the grace off only the poll's own timeout ends it");
+    const next = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`).then((response) =>
+      response.json(),
+    );
+    assert.deepEqual(next, { status: "waiting" }, "no stale browser_disconnected may be left for a later poll");
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });
@@ -5459,12 +5686,19 @@ test("a disconnect during immediate feedback take requeues the batch without wor
       await presence.close();
     }
 
+    // The restore re-appended nothing and took the failed take's Seen stamps off again.
+    assert.deepEqual(JSON.parse(await readFile(stateFile, "utf8")).sessions[key].chat, beforeState.chat);
+
     const next = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
     const feedback = await next.json();
     assert.equal(feedback.status, "feedback");
     assert.deepEqual(feedback.dom_snapshot, queued.domSnapshot);
     assert.deepEqual(feedback.prompts, before);
-    assert.deepEqual(JSON.parse(await readFile(stateFile, "utf8")).sessions[key].chat, beforeState.chat);
+    // This delivery reached the agent, so it is the one that counts as Seen.
+    assert.deepEqual(
+      JSON.parse(await readFile(stateFile, "utf8")).sessions[key].chat.map((entry) => entry.delivered_seq),
+      [2, 2],
+    );
   } finally {
     SessionStore.prototype.takeFeedback = originalTakeFeedback;
     await server.close();
@@ -5563,12 +5797,18 @@ test("a disconnect during event-driven feedback take requeues the batch without 
       } finally {
         await afterRestorePresence.close();
       }
+      // The restore re-appended nothing and took the failed take's Seen stamps off again.
+      assert.deepEqual(JSON.parse(await readFile(stateFile, "utf8")).sessions[key].chat, beforeState.chat);
       const next = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
       const feedback = await next.json();
       assert.equal(feedback.status, "feedback");
       assert.equal(feedback.dom_snapshot, queued.domSnapshot);
       assert.deepEqual(feedback.prompts, [queued.prompts[0]]);
-      assert.deepEqual(JSON.parse(await readFile(stateFile, "utf8")).sessions[key].chat, beforeState.chat);
+      // This delivery reached the agent, so it is the one that counts as Seen.
+      assert.deepEqual(
+        JSON.parse(await readFile(stateFile, "utf8")).sessions[key].chat.map((entry) => entry.delivered_seq),
+        [2],
+      );
     } finally {
       await presence.close();
     }
@@ -6336,6 +6576,31 @@ test("extractArtifactHead pulls a data-URI favicon and title from the artifact h
   assert.equal(title, "Weekly Board");
 });
 
+test("extractArtifactHead ignores a <title> mentioned inside an HTML comment", () => {
+  const artifact = `<!doctype html><html><head>
+    <!-- Run title (appears in <title> and the header meta) -->
+    <title>Real Board</title>
+    </head><body></body></html>`;
+  assert.equal(extractArtifactHead(artifact).title, "Real Board");
+
+  const multiline = `<head><!--
+    <title>Draft</title>
+    -->
+    <title>Final</title></head>`;
+  assert.equal(extractArtifactHead(multiline).title, "Final");
+
+  assert.equal(extractArtifactHead("<head><!-- <title>Only in a comment</title> --></head>").title, "");
+});
+
+test("extractArtifactHead keeps the title when a '<!--' is not a comment", () => {
+  // Browsers read script and style contents as raw text, so a "<!--" there opens no comment.
+  assert.equal(
+    extractArtifactHead('<head><script>const marker = "<!--";</script><title>Board</title></head>').title,
+    "Board",
+  );
+  assert.equal(extractArtifactHead("<head><style>/* <!-- */</style><title>Board</title></head>").title, "Board");
+});
+
 test("extractArtifactHead handles shortcut icon and absolute hrefs", () => {
   const artifact = `<head><link rel="shortcut icon" href="https://example.com/fav.ico"></head>`;
   const { faviconTag } = extractArtifactHead(artifact);
@@ -6548,6 +6813,66 @@ test("the live transcript carries rendered html for agent replies and never for 
     // The page bootstraps the same transcript, so a reload renders structure without a live event.
     const page = await fetch(`${base}/session/${opened.key}`).then((response) => response.text());
     assert.match(page, /"html":"\\u003cp\\u003eDone\.\\u003c\/p\\u003e\\u003cul\\u003e/);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("chat-sync stamps a note seen when a poll takes it, working when the artifact changes, and done on reply", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body><h1>Hello</h1></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const open = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = await open.json();
+    const stream = await startEventStream(base, key, "chat-sync");
+    try {
+      assert.deepEqual((await stream.next()).chat, [], "the connect snapshot carries the empty transcript");
+
+      const submitted = await fetch(`${base}/api/${key}/prompts`, {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: base },
+        body: JSON.stringify({ prompts: [{ prompt: "Make it blue", tag: "message", selector: "body", text: "" }] }),
+      });
+      assert.equal(submitted.status, 200);
+      const sent = await stream.next();
+      assert.equal(sent.chat.length, 1);
+      assert.equal("delivered_at" in sent.chat[0], false, "a send is not a delivery");
+
+      const poll = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
+      const feedback = await poll.json();
+      assert.equal(feedback.status, "feedback");
+      assert.equal("delivery_seq" in feedback, false, "the poll response carries no stamp bookkeeping");
+      const seen = await stream.next();
+      assert.ok(seen.chat[0].delivered_at, "the take stamps the note seen");
+      assert.equal("working_at" in seen.chat[0], false);
+      assert.ok(seen.chat_revision > sent.chat_revision);
+
+      await writeFile(artifact, "<!doctype html><html><body><h1 style='color:blue'>Hello</h1></body></html>");
+      const working = await stream.next();
+      assert.ok(working.chat[0].working_at, "an artifact change after delivery stamps working");
+      assert.equal("done_at" in working.chat[0], false);
+
+      const replied = await fetch(`${base}/api/${key}/agent-reply`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: "It is blue now." }),
+      });
+      assert.equal(replied.status, 200);
+      const done = await stream.next();
+      assert.ok(done.chat[0].done_at, "the reply stamps the note done");
+      assert.equal(done.chat[1].role, "agent");
+      assert.equal(done.chat[0].done_at, done.chat[1].at);
+    } finally {
+      await stream.close();
+    }
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });

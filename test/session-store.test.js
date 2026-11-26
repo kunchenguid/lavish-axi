@@ -37,7 +37,7 @@ function diagnosticPayload(load, sequence, body = {}) {
 
 function feedbackResult(result) {
   assert.equal(result.status, "feedback");
-  return /** @type {{ status: string, dom_snapshot: string, prompts: any[], artifact_failures?: any[], session_ended?: boolean, ended_by?: string }} */ (
+  return /** @type {{ status: string, dom_snapshot: string, prompts: any[], artifact_failures?: any[], session_ended?: boolean, ended_by?: string, delivery_seq?: number }} */ (
     result
   );
 }
@@ -2576,4 +2576,273 @@ test("an oversized agent reply preserves evicted prompt acks without exceeding t
     const afterRetry = await store.findByKey(session.key);
     assert.equal(afterRetry.prompts.length, 1, "the evicted note must not be delivered twice");
   });
+});
+
+// Delivery acks (docs/delivery-acks.md): Seen / Working / Done are stamped on the chat entry the
+// reviewer is looking at, from facts the server already records.
+
+function stampsOf(session) {
+  return session.chat
+    .filter((entry) => entry.role === "user")
+    .map((entry) => ({
+      text: entry.text,
+      delivered: Boolean(entry.delivered_at),
+      seq: entry.delivered_seq ?? null,
+      working: Boolean(entry.working_at),
+      done: Boolean(entry.done_at),
+    }));
+}
+
+test("takeFeedback stamps every undelivered user entry as seen and bumps chat_revision", async () => {
+  await withStore(async ({ store, session }) => {
+    await store.queuePrompts(session.key, {
+      prompts: [
+        { uid: "A", prompt: "First", selector: "", tag: "message", text: "" },
+        { uid: "B", prompt: "Second", selector: "h1", tag: "h1", text: "Hello" },
+      ],
+    });
+    const before = await store.findByKey(session.key);
+    assert.deepEqual(
+      stampsOf(before).map((entry) => entry.delivered),
+      [false, false],
+    );
+
+    const taken = feedbackResult(await store.takeFeedback(session.key));
+    assert.equal(taken.delivery_seq, 1, "the take reports the sequence it stamped");
+    assert.equal("delivery_seq" in taken.prompts[0], false, "the agent-facing prompts carry no stamp");
+
+    const after = await store.findByKey(session.key);
+    assert.deepEqual(stampsOf(after), [
+      { text: "First", delivered: true, seq: 1, working: false, done: false },
+      { text: "Second", delivered: true, seq: 1, working: false, done: false },
+    ]);
+    assert.ok(after.chat_revision > before.chat_revision, "a stamp change is a transcript change");
+    assert.equal(after.delivery_seq, 1);
+
+    // A take with nothing pending stamps nothing and does not advance the sequence.
+    assert.equal((await store.takeFeedback(session.key)).status, "waiting");
+    const idle = await store.findByKey(session.key);
+    assert.equal(idle.delivery_seq, 1);
+    assert.equal(idle.chat_revision, after.chat_revision);
+  });
+});
+
+test("a restored take removes only its own seen stamps and the next take re-stamps them", async () => {
+  await withStore(async ({ store, session }) => {
+    await store.queuePrompts(session.key, {
+      prompts: [{ uid: "A", prompt: "First", selector: "", tag: "message", text: "" }],
+    });
+    const pristine = await store.findByKey(session.key);
+    const taken = feedbackResult(await store.takeFeedback(session.key));
+    await store.queuePrompts(session.key, {
+      prompts: [{ uid: "B", prompt: "Second", selector: "", tag: "message", text: "" }],
+    });
+
+    const restored = await store.queuePrompts(
+      session.key,
+      { dom_snapshot: taken.dom_snapshot, prompts: taken.prompts, delivery_seq: taken.delivery_seq },
+      { restore: true },
+    );
+    assert.deepEqual(
+      restored.prompts.map((prompt) => prompt.uid),
+      ["A", "B"],
+    );
+    // Deleted, not nulled: the entry is byte-for-byte what it was before the take.
+    assert.deepEqual(restored.chat[0], pristine.chat[0]);
+    assert.deepEqual(stampsOf(restored), [
+      { text: "First", delivered: false, seq: null, working: false, done: false },
+      { text: "Second", delivered: false, seq: null, working: false, done: false },
+    ]);
+
+    const again = feedbackResult(await store.takeFeedback(session.key));
+    assert.equal(again.delivery_seq, 2);
+    assert.deepEqual(
+      stampsOf(await store.findByKey(session.key)).map((entry) => entry.seq),
+      [2, 2],
+    );
+  });
+});
+
+test("a refused restore still removes its take's seen stamps", async () => {
+  await withStore(async ({ store, session }) => {
+    const id = "a".repeat(64);
+    const attachment = { id, path: "/tmp/a.png", mime: "image/png", bytes: 1, name: "a.png" };
+    await store.queuePrompts(
+      session.key,
+      { prompts: [{ uid: "A", prompt: "First", selector: "", tag: "message", text: "", attachments: [{ id }] }] },
+      { resolveAttachment: async () => attachment },
+    );
+    const sent = await store.findByKey(session.key);
+    const taken = feedbackResult(await store.takeFeedback(session.key));
+    const seen = await store.findByKey(session.key);
+    assert.deepEqual(
+      stampsOf(seen).map((entry) => entry.delivered),
+      [true],
+    );
+
+    // The poll closed before its response was written, and the image is gone by the restore.
+    const refused = await store.queuePrompts(
+      session.key,
+      { dom_snapshot: taken.dom_snapshot, prompts: taken.prompts, delivery_seq: taken.delivery_seq },
+      { restore: true, resolveAttachment: async () => null },
+    );
+    assert.ok(refused.rejected?.length > 0, "the restore was refused");
+
+    const after = await store.findByKey(session.key);
+    assert.deepEqual(after.prompts, [], "nothing was re-queued");
+    assert.deepEqual(after.chat[0], sent.chat[0], "the note no agent received does not read Seen");
+    assert.ok(after.chat_revision > seen.chat_revision, "the chrome accepts the un-stamped transcript");
+
+    await store.addAgentReply(session.key, "About something else.");
+    assert.deepEqual(stampsOf(await store.findByKey(session.key)), [
+      { text: "First", delivered: false, seq: null, working: false, done: false },
+    ]);
+  });
+});
+
+test("a note an ended round left at seen is not marked by the next round's edit or reply", async () => {
+  await withStore(async ({ store, session, artifact }) => {
+    await store.queuePrompts(session.key, {
+      prompts: [{ uid: "A", prompt: "First", selector: "", tag: "message", text: "" }],
+    });
+    feedbackResult(await store.takeFeedback(session.key));
+    await store.endSession(session.key, "agent");
+    await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    // A plain re-open of the now-open session does not move the boundary again.
+    await store.upsertSession(artifact, "http://localhost:4387/session/test");
+
+    assert.equal(await store.markWorking(session.key), null, "an edit in the new round is not about the old note");
+    await store.queuePrompts(session.key, {
+      prompts: [{ uid: "B", prompt: "Second", selector: "", tag: "message", text: "" }],
+    });
+    feedbackResult(await store.takeFeedback(session.key));
+    await store.markWorking(session.key);
+    await store.addAgentReply(session.key, "Handled the second one.");
+
+    assert.deepEqual(stampsOf(await store.findByKey(session.key)), [
+      { text: "First", delivered: true, seq: 1, working: false, done: false },
+      { text: "Second", delivered: true, seq: 2, working: true, done: true },
+    ]);
+  });
+});
+
+test("an agent reply marks delivered entries done and leaves undelivered ones alone", async () => {
+  await withStore(async ({ store, session }) => {
+    await store.queuePrompts(session.key, {
+      prompts: [{ uid: "A", prompt: "First", selector: "", tag: "message", text: "" }],
+    });
+    feedbackResult(await store.takeFeedback(session.key));
+    await store.queuePrompts(session.key, {
+      prompts: [{ uid: "B", prompt: "Second", selector: "", tag: "message", text: "" }],
+    });
+
+    await store.addAgentReply(session.key, "Done with the first one.");
+    const after = await store.findByKey(session.key);
+    assert.deepEqual(stampsOf(after), [
+      { text: "First", delivered: true, seq: 1, working: false, done: true },
+      { text: "Second", delivered: false, seq: null, working: false, done: false },
+    ]);
+    const reply = after.chat.at(-1);
+    assert.equal(reply.role, "agent");
+    assert.equal(after.chat[0].done_at, reply.at, "done is stamped with the reply's own time");
+
+    // A second reply does not re-stamp an entry that is already done.
+    await store.addAgentReply(session.key, "Anything else?");
+    assert.equal((await store.findByKey(session.key)).chat[0].done_at, reply.at);
+  });
+});
+
+test("markWorking stamps delivered entries that are not done, once, and reports whether it changed", async () => {
+  await withStore(async ({ store, session }) => {
+    await store.queuePrompts(session.key, {
+      prompts: [{ uid: "A", prompt: "First", selector: "", tag: "message", text: "" }],
+    });
+    const sent = await store.findByKey(session.key);
+    assert.equal(await store.markWorking(session.key), null, "nothing delivered yet: no stamp, no write");
+    assert.equal((await store.findByKey(session.key)).chat_revision, sent.chat_revision);
+
+    feedbackResult(await store.takeFeedback(session.key));
+    const working = await store.markWorking(session.key);
+    assert.ok(working, "a delivered entry is stamped");
+    const first = stampsOf(working);
+    assert.deepEqual(first, [{ text: "First", delivered: true, seq: 1, working: true, done: false }]);
+    const workingAt = working.chat[0].working_at;
+
+    assert.equal(await store.markWorking(session.key), null, "a second reload changes nothing");
+    assert.equal((await store.findByKey(session.key)).chat[0].working_at, workingAt);
+
+    await store.addAgentReply(session.key, "Shipped.");
+    assert.equal(await store.markWorking(session.key), null, "a done entry is never re-marked working");
+    assert.equal(await store.markWorking("missing-session"), null);
+  });
+});
+
+test("reopening a session keeps the delivery sequence and the stamps", async () => {
+  await withStore(async ({ store, session, artifact }) => {
+    await store.queuePrompts(session.key, {
+      prompts: [{ uid: "A", prompt: "First", selector: "", tag: "message", text: "" }],
+    });
+    feedbackResult(await store.takeFeedback(session.key));
+    await store.endSession(session.key, "agent");
+
+    const reopened = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    assert.equal(reopened.delivery_seq, 1);
+    assert.deepEqual(stampsOf(reopened), [{ text: "First", delivered: true, seq: 1, working: false, done: false }]);
+  });
+});
+
+test("a transcript older than receipts is marked at load and never stamped", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+    const key = "legacy-session";
+    // What a pre-receipt install left behind: chat with no stamps and no delivery_seq key at all.
+    await writeFile(
+      stateFile,
+      JSON.stringify({
+        sessions: {
+          [key]: {
+            key,
+            file: artifact,
+            url: "http://localhost:4387/session/legacy",
+            status: "open",
+            pending_prompts: 0,
+            prompts: [],
+            chat: [
+              { role: "user", kind: "message", text: "From last month", at: "2026-09-01T10:00:00.000Z" },
+              { role: "agent", text: "Done then.", at: "2026-09-01T10:05:00.000Z" },
+            ],
+            chat_revision: 7,
+            updated_at: "2026-09-01T10:05:00.000Z",
+          },
+        },
+      }),
+    );
+
+    const store = new SessionStore(stateFile);
+    const loaded = await store.findByKey(key);
+    assert.equal(loaded.delivery_seq, 0);
+    assert.equal(loaded.chat[0].receipt, "none");
+    assert.equal("receipt" in loaded.chat[1], false, "agent entries are untouched");
+    const persisted = JSON.parse(await readFile(stateFile, "utf8")).sessions[key];
+    assert.equal(persisted.delivery_seq, 0, "the marker is persisted before any take can run");
+    assert.equal(persisted.chat[0].receipt, "none");
+
+    await store.queuePrompts(key, {
+      prompts: [{ uid: "A", prompt: "New note", selector: "", tag: "message", text: "" }],
+    });
+    feedbackResult(await store.takeFeedback(key));
+    await store.addAgentReply(key, "Handled the new one.");
+    const after = await store.findByKey(key);
+    assert.deepEqual(stampsOf(after), [
+      { text: "From last month", delivered: false, seq: null, working: false, done: false },
+      { text: "New note", delivered: true, seq: 1, working: false, done: true },
+    ]);
+    assert.equal(after.chat[0].receipt, "none");
+    assert.equal("receipt" in after.chat[2], false, "entries written since receipts carry no marker");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

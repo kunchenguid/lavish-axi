@@ -26,7 +26,9 @@ async function withTempDir(run) {
   try {
     return await run(dir);
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    // The spawned server runs with the state dir as its cwd, and Windows refuses to remove a
+    // directory that a still-exiting process is in.
+    await rm(dir, { recursive: true, force: true, maxRetries: 10 });
   }
 }
 
@@ -145,6 +147,7 @@ test("a stale control-channel server is replaced only once per CLI invocation", 
 
     assert.equal(await countShutdowns({ ok: true, app: "lavish-axi", version: VERSION, network_stale: true }), 1);
     assert.equal(await countShutdowns({ ok: true, app: "lavish-axi", version: "0.0.1", network_stale: true }), 2);
+    assert.equal(await countShutdowns({ ok: true, app: "lavish-axi", version: "999.0.0", network_stale: true }), 1);
   });
 });
 

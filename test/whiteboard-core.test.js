@@ -2,9 +2,17 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  conversionUsesUnverifiedLibraries,
   createWhiteboardPersistencePayload,
   findDuplicateElementIds,
+  LIBRARY_ICON_GROWN_SPACING,
+  LIBRARY_ICON_HEIGHT,
+  LIBRARY_ICON_MAX_WIDTH,
+  libraryIconMermaidConfig,
+  libraryIconSize,
   normalizeExcalidrawSceneTarget,
+  placeLibraryIcons,
+  prepareLibraryIconSkeletons,
   repairSavedSceneTextMetrics,
   resolveWhiteboardInitAction,
   restoreMermaidLabelLineBreaks,
@@ -113,6 +121,71 @@ test("whiteboard persistence payload keeps migration and baseline fields togethe
       baseline: { elements: baselineElements },
     },
   );
+});
+
+test("a scene drawn with unverified libraries is never restored as matching its diagram", () => {
+  const baselineElements = [rect("A")];
+  const iconSource = "flowchart TD\n%% lavish-icon a aws/Lambda\na-->b";
+  const state = {
+    sceneSourceHash: "hash-1",
+    textMetricsVersion: 1,
+    baselineElements,
+    drawnWithUnverifiedLibraries: conversionUsesUnverifiedLibraries(iconSource, true),
+  };
+  const unedited = { elements: [rect("A")] };
+  const edited = { elements: [rect("A"), rect("added")] };
+  // Autosave and queued feedback share this payload: it keeps the full scene,
+  // but its hash never matches, so a later open re-converts with the right
+  // libraries (or offers the choice when the reviewer had edited it).
+  const payload = createWhiteboardPersistencePayload(state, unedited);
+  assert.deepEqual(payload.scene, unedited);
+  assert.deepEqual(payload.baseline, { elements: baselineElements });
+  assert.notEqual(payload.sourceHash, "hash-1");
+  const saved = (scene) => ({
+    source_hash: createWhiteboardPersistencePayload(state, scene).sourceHash,
+    scene,
+    baseline: { elements: baselineElements },
+  });
+  assert.equal(resolveWhiteboardInitAction(saved(unedited), "hash-1"), "convert");
+  assert.equal(resolveWhiteboardInitAction(saved(edited), "hash-1"), "prompt");
+  const verified = { ...state, drawnWithUnverifiedLibraries: conversionUsesUnverifiedLibraries(iconSource, false) };
+  assert.equal(createWhiteboardPersistencePayload(verified, unedited).sourceHash, "hash-1");
+});
+
+test("a plain diagram converted while libraries are unavailable keeps a matching hash", () => {
+  const baselineElements = [rect("A")];
+  const state = {
+    sceneSourceHash: "hash-1",
+    textMetricsVersion: 1,
+    baselineElements,
+    drawnWithUnverifiedLibraries: conversionUsesUnverifiedLibraries("flowchart TD\na-->b", true),
+  };
+  const edited = { elements: [rect("A"), rect("added")] };
+  const saved = {
+    source_hash: createWhiteboardPersistencePayload(state, edited).sourceHash,
+    scene: edited,
+    baseline: { elements: baselineElements },
+  };
+  assert.equal(resolveWhiteboardInitAction(saved, "hash-1"), "restore");
+});
+
+test("a restored scene keeps its saved hash when this open's libraries are unavailable", () => {
+  const baselineElements = [rect("A")];
+  const edited = { elements: [rect("A"), rect("added")] };
+  // startFromSavedScene restores under the saved hash and never marks the
+  // scene, whatever the libraries fetch of this open reported.
+  const restoredState = {
+    sceneSourceHash: "hash-1",
+    textMetricsVersion: 1,
+    baselineElements,
+    drawnWithUnverifiedLibraries: false,
+  };
+  const saved = {
+    source_hash: createWhiteboardPersistencePayload(restoredState, edited).sourceHash,
+    scene: edited,
+    baseline: { elements: baselineElements },
+  };
+  assert.equal(resolveWhiteboardInitAction(saved, "hash-1"), "restore");
 });
 
 // ---------------------------------------------------------------------------
@@ -612,4 +685,435 @@ test("restoreMermaidLabelLineBreaks leaves single-line labels and non-label fiel
   assert.deepEqual(out[1], label);
   assert.equal(out[2].label.text, "yes");
   assert.equal(out[2].id, "a1");
+});
+
+// ---------------------------------------------------------------------------
+// Library icon nodes
+// ---------------------------------------------------------------------------
+
+function vertexSkeleton(id, opts = {}) {
+  return {
+    id,
+    type: "rectangle",
+    groupIds: [],
+    x: 0,
+    y: 0,
+    width: 120,
+    height: 40,
+    label: { text: id, fontSize: 16 },
+    ...opts,
+  };
+}
+
+// Drawn at 160px, so it renders at 0.4 scale (64px icons).
+function lambdaItem() {
+  return {
+    ref: "aws/AWS Lambda",
+    name: "AWS Lambda",
+    elements: [
+      { id: "bg", type: "rectangle", x: 100, y: 100, width: 160, height: 160, groupIds: ["item"] },
+      {
+        id: "mark",
+        type: "line",
+        x: 120,
+        y: 240,
+        width: 120,
+        height: 120,
+        points: [
+          [0, 0],
+          [60, -120],
+          [120, 0],
+        ],
+        groupIds: ["item"],
+      },
+      {
+        id: "cap",
+        type: "text",
+        x: 140,
+        y: 160,
+        width: 80,
+        height: 40,
+        fontSize: 40,
+        text: "λ",
+        groupIds: ["item"],
+        containerId: "bg",
+      },
+    ],
+  };
+}
+
+function itemOfSize(width, height) {
+  return { ref: "x/y", elements: [{ id: "r", type: "rectangle", x: 0, y: 0, width, height }] };
+}
+
+test("libraryIconMermaidConfig adds spacing only on the axis icon nodes grow along", () => {
+  const icon = [{ item: lambdaItem() }];
+  assert.deepEqual(libraryIconMermaidConfig([], "flowchart TB"), {});
+  assert.deepEqual(libraryIconMermaidConfig([{ item: null }], "flowchart TB"), {});
+  // Icon nodes grow taller: in a top-down chart that is the gap between ranks,
+  // in a left-right chart the gap between nodes of one rank.
+  assert.deepEqual(libraryIconMermaidConfig(icon, "flowchart TB\n  a --> b"), {
+    flowchart: { curve: "linear", nodeSpacing: 50, rankSpacing: LIBRARY_ICON_GROWN_SPACING },
+  });
+  assert.deepEqual(libraryIconMermaidConfig(icon, "%% note\ngraph TD\n  a --> b"), {
+    flowchart: { curve: "linear", nodeSpacing: 50, rankSpacing: LIBRARY_ICON_GROWN_SPACING },
+  });
+  assert.deepEqual(libraryIconMermaidConfig(icon, "flowchart LR\n  a --> b"), {
+    flowchart: { curve: "linear", nodeSpacing: LIBRARY_ICON_GROWN_SPACING, rankSpacing: 50 },
+  });
+  assert.deepEqual(libraryIconMermaidConfig(icon, "flowchart RL"), libraryIconMermaidConfig(icon, "flowchart LR"));
+  assert.deepEqual(libraryIconMermaidConfig(icon, "flowchart"), libraryIconMermaidConfig(icon, "flowchart TB"));
+  const frontmatter = "---\nconfig:\n  flowchart:\n    curve: basis\n---\nflowchart LR\n  a --> b";
+  assert.deepEqual(libraryIconMermaidConfig(icon, frontmatter), libraryIconMermaidConfig(icon, "flowchart LR"));
+});
+
+test("libraryIconSize scales every item to one icon height within a width cap", () => {
+  assert.deepEqual(libraryIconSize(itemOfSize(65, 93)).height, LIBRARY_ICON_HEIGHT);
+  assert.deepEqual(libraryIconSize(itemOfSize(20, 20)), {
+    scale: LIBRARY_ICON_HEIGHT / 20,
+    width: LIBRARY_ICON_HEIGHT,
+    height: LIBRARY_ICON_HEIGHT,
+  });
+  const wide = libraryIconSize(itemOfSize(300, 40));
+  assert.equal(wide.width, LIBRARY_ICON_MAX_WIDTH);
+  assert.ok(wide.height < LIBRARY_ICON_HEIGHT);
+});
+
+test("libraryIconSize measures rotated elements by their rotated bounds", () => {
+  const rotated = {
+    ref: "x/bar",
+    elements: [{ id: "bar", type: "rectangle", x: 0, y: 0, width: 100, height: 10, angle: Math.PI / 2 }],
+  };
+  const size = libraryIconSize(rotated);
+  assert.ok(Math.abs(size.height - LIBRARY_ICON_HEIGHT) < 1e-9, `height ${size.height}`);
+  assert.ok(Math.abs(size.width - LIBRARY_ICON_HEIGHT / 10) < 1e-9, `width ${size.width}`);
+});
+
+test("prepareLibraryIconSkeletons grows the node around icon and label, keeping its center", () => {
+  const skeletons = [vertexSkeleton("api", { x: 100, y: 200, width: 120, height: 40 })];
+  const { skeletons: prepared, missing } = prepareLibraryIconSkeletons(skeletons, [
+    { nodeId: "api", ref: "aws/AWS Lambda", item: lambdaItem() },
+  ]);
+  assert.deepEqual(missing, []);
+  const node = prepared[0];
+  // 64px icon over a one-line label, with padding; the box shrinks to fit.
+  assert.equal(node.width, 80);
+  assert.equal(node.height, 106);
+  assert.equal(node.y + node.height / 2, 220);
+  assert.equal(node.x + node.width / 2, 160);
+  assert.equal(node.strokeColor, "transparent");
+  assert.equal(node.backgroundColor, "transparent");
+  assert.equal(node.label.verticalAlign, "bottom");
+  assert.equal(node.label.strokeColor, "#1e1e1e", "the label stays visible on a transparent node");
+  const styled = prepareLibraryIconSkeletons(
+    [vertexSkeleton("api", { strokeColor: "#c92a2a" })],
+    [{ nodeId: "api", ref: "aws/AWS Lambda", item: lambdaItem() }],
+  ).skeletons[0];
+  assert.equal(styled.label.strokeColor, "#c92a2a");
+  assert.deepEqual(node.customData, { lavishIconNode: "aws/AWS Lambda" });
+  assert.equal(skeletons[0].height, 40, "input skeletons are not mutated");
+});
+
+test("prepareLibraryIconSkeletons trims bound arrow endpoints to the grown node edge", () => {
+  const skeletons = [
+    vertexSkeleton("user", { x: 100, y: 0, width: 120, height: 40 }),
+    vertexSkeleton("api", { x: 100, y: 100, width: 120, height: 40 }),
+    // user bottom edge (y=40) down to api top edge (y=100)
+    {
+      id: "user_api",
+      type: "arrow",
+      x: 160,
+      y: 40,
+      points: [
+        [0, 0],
+        [0, 60],
+      ],
+      start: { id: "user" },
+      end: { id: "api" },
+    },
+    // api bottom edge (y=140) down to db
+    {
+      id: "api_db",
+      type: "arrow",
+      x: 160,
+      y: 140,
+      points: [
+        [0, 0],
+        [0, 60],
+      ],
+      start: { id: "api" },
+      end: { id: "db" },
+    },
+  ];
+  const { skeletons: prepared } = prepareLibraryIconSkeletons(skeletons, [
+    { nodeId: "api", ref: "aws/AWS Lambda", item: lambdaItem() },
+  ]);
+  const api = prepared[1];
+  const incoming = prepared[2];
+  const outgoing = prepared[3];
+  const incomingEnd = incoming.y + incoming.points.at(-1)[1];
+  assert.equal(incoming.x, 160);
+  assert.equal(incoming.y, 40, "the far end does not move");
+  assert.ok(incomingEnd < api.y && incomingEnd >= api.y - 5, `end ${incomingEnd} vs top ${api.y}`);
+  assert.deepEqual(outgoing.points[0], [0, 0]);
+  assert.ok(outgoing.y > api.y + api.height && outgoing.y <= api.y + api.height + 5, `start ${outgoing.y}`);
+  assert.equal(outgoing.y + outgoing.points.at(-1)[1], 200, "the far end does not move");
+});
+
+test("prepareLibraryIconSkeletons restores a label font the converter shrank", () => {
+  const cylinder = vertexSkeleton("db", { label: { text: "DynamoDB observations", fontSize: 12 } });
+  const icons = [{ nodeId: "db", ref: "aws/AWS Lambda", item: lambdaItem() }];
+  const [grown] = prepareLibraryIconSkeletons([cylinder], icons, { labelFontSize: 16 }).skeletons;
+  assert.equal(grown.label.fontSize, 16);
+  const [larger] = prepareLibraryIconSkeletons([vertexSkeleton("db", { label: { text: "db", fontSize: 20 } })], icons, {
+    labelFontSize: 16,
+  }).skeletons;
+  assert.equal(larger.label.fontSize, 20, "never shrinks a label");
+  const [untouched] = prepareLibraryIconSkeletons([cylinder], icons).skeletons;
+  assert.equal(untouched.label.fontSize, 12);
+});
+
+test("prepareLibraryIconSkeletons extends arrows that ended on a wider original box", () => {
+  const skeletons = [
+    vertexSkeleton("api", { x: 100, y: 100, width: 300, height: 40 }),
+    {
+      id: "user_api",
+      type: "arrow",
+      x: 0,
+      y: 120,
+      points: [
+        [0, 0],
+        [100, 0],
+      ],
+      start: { id: "user" },
+      end: { id: "api" },
+    },
+  ];
+  const { skeletons: prepared } = prepareLibraryIconSkeletons(skeletons, [
+    { nodeId: "api", ref: "aws/AWS Lambda", item: lambdaItem() },
+  ]);
+  const [api, arrow] = prepared;
+  assert.equal(api.x, 250 - 80 / 2);
+  assert.equal(arrow.x, 0, "the far end does not move");
+  assert.deepEqual(arrow.points.at(-1), [api.x - 4, 0]);
+});
+
+test("prepareLibraryIconSkeletons reports missing items and nodes and skips subgraphs", () => {
+  const skeletons = [vertexSkeleton("vpc", { groupIds: ["subgraph_group_vpc"] }), vertexSkeleton("api")];
+  const { skeletons: prepared, missing } = prepareLibraryIconSkeletons(skeletons, [
+    { nodeId: "api", ref: "aws/Nope", item: null },
+    { nodeId: "vpc", ref: "aws/AWS Lambda", item: lambdaItem() },
+    { nodeId: "ghost", ref: "aws/AWS Lambda", item: lambdaItem() },
+  ]);
+  assert.deepEqual(prepared, skeletons);
+  assert.deepEqual(missing, [
+    { nodeId: "api", ref: "aws/Nope", reason: "item" },
+    { nodeId: "vpc", ref: "aws/AWS Lambda", reason: "node" },
+    { nodeId: "ghost", ref: "aws/AWS Lambda", reason: "node" },
+  ]);
+});
+
+test("placeLibraryIcons scales the item into the top of the node with deterministic ids", () => {
+  const container = {
+    ...rect("api", { x: 100, y: 180, width: 120, height: 90, groupIds: ["subgraph_group_vpc"] }),
+    customData: { lavishIconNode: "aws/AWS Lambda" },
+    boundElements: [{ id: "api-label", type: "text" }],
+  };
+  const label = { ...boundLabel("api-label", "api", "Orders API"), groupIds: ["subgraph_group_vpc"], height: 20 };
+  const other = rect("db", { x: 400 });
+  const item = lambdaItem();
+  const placed = placeLibraryIcons([container, label, other], (ref) => (ref === "aws/AWS Lambda" ? item : null));
+  assert.deepEqual(
+    placed.map((element) => element.id),
+    ["api", "api-label", "api:icon:0", "api:icon:1", "api:icon:2", "db"],
+  );
+  const [node, text, bg, mark, cap] = placed;
+  const iconGroup = "api:icon";
+  assert.deepEqual(node.groupIds, [iconGroup, "subgraph_group_vpc"]);
+  assert.deepEqual(text.groupIds, [iconGroup, "subgraph_group_vpc"]);
+  assert.equal(text.y + text.height, node.y + node.height - 5);
+  assert.deepEqual(bg.groupIds, ["api:icon:item", iconGroup, "subgraph_group_vpc"]);
+  assert.equal(bg.width, 64);
+  assert.equal(bg.height, 64);
+  assert.equal(bg.x, 100 + (120 - 64) / 2);
+  assert.equal(bg.y, 180 + 8);
+  assert.deepEqual(mark.points, [
+    [0, 0],
+    [24, -48],
+    [48, 0],
+  ]);
+  assert.equal(cap.fontSize, 16);
+  assert.equal(cap.containerId, "api:icon:0");
+  assert.deepEqual(bg.customData, { lavishLibraryRef: "aws/AWS Lambda" });
+  assert.equal(item.elements[0].x, 100, "library item is not mutated");
+  assert.deepEqual(
+    placeLibraryIcons([container, label], () => null),
+    [container, label],
+  );
+});
+
+test("summarizeSceneEdits names a reviewer-dropped library item once", () => {
+  const baseline = [rect("A")];
+  const ref = { lavishLibraryRef: "aws/AWS Lambda" };
+  const edited = [
+    rect("A"),
+    rect("n1", { x: 300, y: 120, groupIds: ["g1"], customData: ref }),
+    { id: "n2", type: "freedraw", x: 310, y: 130, points: [[0, 0]], groupIds: ["g1"], customData: ref },
+    { id: "n3", type: "text", x: 320, y: 140, text: "λ", groupIds: ["g1"], customData: ref },
+  ];
+  const summary = summarizeSceneEdits(baseline, edited);
+  assert.deepEqual(summary.lines, ["Added library item aws/AWS Lambda near (300, 120)"]);
+  assert.deepEqual(summary.stats, { added: 1, removed: 0, moved: 0, relabeled: 0, drawn: 0 });
+});
+
+test("summarizeSceneEdits folds an icon node's icon into the node", () => {
+  const ref = { lavishLibraryRef: "aws/AWS Lambda" };
+  const baseline = [
+    rect("api", { groupIds: ["api:icon"] }),
+    boundLabel("api-label", "api", "Orders API"),
+    rect("api:icon:0", { groupIds: ["api:icon"], customData: ref }),
+    rect("api:icon:1", { groupIds: ["api:icon"], customData: ref }),
+  ];
+  const moved = baseline.map((element) => ({ ...element, x: element.x + 50 }));
+  assert.deepEqual(summarizeSceneEdits(baseline, moved).lines, ['Moved by (50, 0): rectangle "Orders API" (api)']);
+  const iconRemoved = baseline.slice(0, 2);
+  assert.deepEqual(summarizeSceneEdits(baseline, iconRemoved).lines, [
+    'Removed library item aws/AWS Lambda from rectangle "Orders API" (api)',
+  ]);
+  assert.deepEqual(summarizeSceneEdits(baseline, []).lines, ['Removed rectangle "Orders API" (api)']);
+});
+
+test("summarizeSceneEdits reports a part deleted from an icon as an edit, not a removal", () => {
+  const ref = { lavishLibraryRef: "aws/AWS Lambda" };
+  const baseline = [
+    rect("api", { groupIds: ["api:icon"] }),
+    boundLabel("api-label", "api", "Orders API"),
+    rect("api:icon:0", { groupIds: ["api:icon"], customData: ref }),
+    rect("api:icon:1", { groupIds: ["api:icon"], customData: ref }),
+    rect("api:icon:2", { groupIds: ["api:icon"], customData: ref }),
+  ];
+  const summary = summarizeSceneEdits(baseline, baseline.slice(0, 4));
+  assert.deepEqual(summary.lines, [
+    'Edited library item aws/AWS Lambda: removed 1 of 3 parts in rectangle "Orders API" (api)',
+  ]);
+  assert.deepEqual(summary.stats, { added: 0, removed: 0, moved: 0, relabeled: 1, drawn: 0 });
+});
+
+test("summarizeSceneEdits reports a moved reviewer-dropped item once", () => {
+  const ref = { lavishLibraryRef: "sys/Queue" };
+  const baseline = [rect("q1", { groupIds: ["g"], customData: ref }), rect("q2", { groupIds: ["g"], customData: ref })];
+  const edited = baseline.map((element) => ({ ...element, y: element.y + 30 }));
+  const summary = summarizeSceneEdits(baseline, edited);
+  assert.deepEqual(summary.lines, ["Moved library item sys/Queue by (0, 30)"]);
+  assert.equal(summary.stats.moved, 1);
+});
+
+test("summarizeSceneEdits reports a moved part of a multi-element library item", () => {
+  const ref = { lavishLibraryRef: "sys/Queue" };
+  const baseline = [
+    rect("q1", { groupIds: ["g"], customData: ref }),
+    rect("q2", { y: 50, groupIds: ["g"], customData: ref }),
+  ];
+  const edited = [baseline[0], { ...baseline[1], y: 90 }];
+  const summary = summarizeSceneEdits(baseline, edited);
+  // The outline grew, and one part moved on its own inside it.
+  assert.deepEqual(summary.lines, ["Resized library item sys/Queue by (0, 40)", "Edited library item sys/Queue"]);
+  assert.equal(summary.stats.moved, 1);
+  assert.equal(summary.stats.relabeled, 1);
+});
+
+test("summarizeSceneEdits reports text edited inside an icon node's icon", () => {
+  const ref = { lavishLibraryRef: "aws/AWS Lambda" };
+  const baseline = [
+    rect("api", { groupIds: ["api:icon"] }),
+    boundLabel("api-label", "api", "Orders API"),
+    {
+      id: "api:icon:0",
+      type: "text",
+      x: 10,
+      y: 10,
+      width: 20,
+      height: 10,
+      text: "λ",
+      groupIds: ["api:icon"],
+      customData: ref,
+    },
+  ];
+  const edited = [baseline[0], baseline[1], { ...baseline[2], text: "μ" }];
+  const summary = summarizeSceneEdits(baseline, edited);
+  assert.deepEqual(summary.lines, ['Edited library item aws/AWS Lambda in rectangle "Orders API" (api)']);
+  assert.equal(summary.stats.relabeled, 1);
+});
+
+test("summarizeSceneEdits reports an icon resized within its node, relative to the node", () => {
+  const ref = { lavishLibraryRef: "aws/AWS Lambda" };
+  const baseline = [
+    rect("api", { groupIds: ["api:icon"] }),
+    boundLabel("api-label", "api", "Orders API"),
+    rect("api:icon:0", { x: 20, y: 5, width: 40, height: 40, groupIds: ["api:icon"], customData: ref }),
+  ];
+  const resized = [baseline[0], baseline[1], { ...baseline[2], width: 60, height: 60 }];
+  assert.deepEqual(summarizeSceneEdits(baseline, resized).lines, [
+    'Resized library item aws/AWS Lambda by (20, 20) in rectangle "Orders API" (api)',
+  ]);
+  const movedTogether = baseline.map((element) => ({ ...element, x: element.x + 100 }));
+  assert.deepEqual(summarizeSceneEdits(baseline, movedTogether).lines, [
+    'Moved by (100, 0): rectangle "Orders API" (api)',
+  ]);
+});
+
+test("summarizeSceneEdits reports a part moved or resized inside an unchanged library item outline", () => {
+  const ref = { lavishLibraryRef: "sys/Server" };
+  const frame = rect("s1", { width: 200, height: 200, groupIds: ["g"], customData: ref });
+  const part = rect("s2", { x: 20, y: 20, width: 40, height: 40, groupIds: ["g"], customData: ref });
+  const baseline = [frame, part];
+  assert.deepEqual(summarizeSceneEdits(baseline, [frame, { ...part, x: 60 }]).lines, [
+    "Edited library item sys/Server",
+  ]);
+  assert.deepEqual(summarizeSceneEdits(baseline, [frame, { ...part, width: 80, height: 80 }]).lines, [
+    "Edited library item sys/Server",
+  ]);
+  const reshaped = {
+    id: "s3",
+    type: "line",
+    x: 10,
+    y: 10,
+    width: 50,
+    height: 50,
+    points: [
+      [0, 0],
+      [50, 50],
+    ],
+    groupIds: ["g"],
+    customData: ref,
+  };
+  assert.deepEqual(
+    summarizeSceneEdits(
+      [frame, reshaped],
+      [
+        frame,
+        {
+          ...reshaped,
+          points: [
+            [0, 50],
+            [50, 0],
+          ],
+        },
+      ],
+    ).lines,
+    ["Edited library item sys/Server"],
+  );
+});
+
+test("summarizeSceneEdits reports a uniformly scaled library item as resized only", () => {
+  const ref = { lavishLibraryRef: "sys/Server" };
+  const baseline = [
+    rect("s1", { width: 200, height: 200, groupIds: ["g"], customData: ref }),
+    rect("s2", { x: 20, y: 20, width: 40, height: 40, groupIds: ["g"], customData: ref }),
+  ];
+  const scaled = [
+    { ...baseline[0], width: 300, height: 300 },
+    { ...baseline[1], x: 30, y: 30, width: 60, height: 60 },
+  ];
+  assert.deepEqual(summarizeSceneEdits(baseline, scaled).lines, ["Resized library item sys/Server by (100, 100)"]);
 });

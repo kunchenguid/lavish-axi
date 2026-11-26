@@ -115,13 +115,21 @@ export function deriveLavishQueueKey(element, options = {}) {
 }
 
 export function isNativeInteractiveControl(el) {
-  return !!(
-    el &&
-    el.closest &&
+  if (!el || !el.closest) return false;
+  if (
     el.closest(
       "button,input,select,textarea,option,optgroup,label,summary,[contenteditable]:not([contenteditable='false'])",
     )
+  ) {
+    return true;
+  }
+  const widget = el.closest(
+    "[role='button'],[role='checkbox'],[role='combobox'],[role='menuitem'],[role='menuitemcheckbox']," +
+      "[role='menuitemradio'],[role='option'],[role='radio'],[role='switch'],[role='tab'],[role='treeitem']",
   );
+  if (!widget) return false;
+  const link = el.closest("a[href]");
+  return !(link && widget.contains(link));
 }
 
 // A severe text failure needs rendered-fragment proof. Scroll dimensions include harmless font
@@ -464,10 +472,19 @@ export function createArtifactSdk(
   function postArtifactMessage(type, payload = {}) {
     parent.postMessage({ type, ...payload, artifact_load_token: String(artifactLoadToken || "") }, "*");
   }
-  let annotationMode = true;
+  // Only an explicit "off" declaration on the root opts out; absent or unknown
+  // values keep the artifact annotatable by default.
+  const initialAnnotationMode = document.documentElement.getAttribute("data-lavish-annotate") !== "off";
+  let annotationMode = initialAnnotationMode;
   let hovered = null;
   let selected = null;
   let ignoreNextClick = false;
+  // Selectors the chrome reports as carrying a queued note. A click on one opens that note in the
+  // chrome's panel instead of a fresh card; the note's words never enter this document.
+  let queuedAnchorSelectors = new Set();
+  // The element each note was queued from, by its selector. A selector is unique only for the
+  // page it was made on, so while that element is still in the page, identity decides the match.
+  const queuedAnchorElements = new Map();
   let shadow = null;
   let counter = 0;
   const ids = new WeakMap();
@@ -785,14 +802,21 @@ export function createArtifactSdk(
   function selector(el) {
     if (!el || !el.tagName) return "";
 
+    // Five levels is the short common case; past it, keep climbing until the chain names only
+    // this element, or an id or the root stops it. Two structurally identical elements would
+    // otherwise share a selector, and a click on one would reopen the other's queued note.
     const parts = [];
     let node = el;
-    while (node && node.nodeType === 1 && parts.length < 5) {
-      let part = node.tagName.toLowerCase();
+    while (node && node.nodeType === 1 && (parts.length < 5 || !selectsOnly(parts))) {
+      let part = node.localName || node.tagName.toLowerCase();
       if (node.id) {
-        part += "#" + CSS.escape(node.id);
-        parts.unshift(part);
-        break;
+        const idPart = part + "#" + CSS.escape(node.id);
+        // Generated pages repeat ids; only an id that names this one element ends the climb.
+        if (selectsOnly([idPart, ...parts])) {
+          parts.unshift(idPart);
+          break;
+        }
+        part = idPart;
       }
 
       const parent = node.parentElement;
@@ -807,12 +831,64 @@ export function createArtifactSdk(
     return parts.join(" > ");
   }
 
+  function rememberQueuedAnchor(note, el) {
+    if (note.target?.type === "text-range") return;
+    if (note.selector && el && typeof WeakRef === "function") queuedAnchorElements.set(note.selector, new WeakRef(el));
+  }
+
+  // Which queued note a click reopens, given the clicked element's `context()`. The clicked
+  // element's own note wins; a click inside a diagram node then finds the node's note, because
+  // the node is one target however deep the click lands. A table cell's note stays on the exact
+  // element clicked.
+  function queuedAnchorFor(el, clicked) {
+    const own = queuedAnchorOf(el, clicked.selector);
+    if (own || clicked.target?.type !== "mermaid-node") return own;
+    const node = mermaidNodeElement(el);
+    return node ? queuedAnchorOf(node, clicked.target.selector) : "";
+  }
+
+  // The queued note that belongs to `el`, whose selector in this page is `freshSelector`. A note
+  // queued in this page matches only the element it was queued from, and stops matching anything
+  // once that element leaves the page: whatever now matches its selector is a different element.
+  // A note this page never saw queued (the frame reloaded) falls back to its selector: the same
+  // string, or a selector whose only match in the page is `el`. The chrome lists each selector at
+  // its newest note and opens the newest note carrying it, so the list is walked newest first: an
+  // element whose selector changed between two notes reopens the newer one.
+  function queuedAnchorOf(el, freshSelector) {
+    for (const candidate of [...queuedAnchorSelectors].reverse()) {
+      const ref = queuedAnchorElements.get(candidate);
+      if (ref) {
+        // A removed element is never the one clicked, so its note matches nothing until a reload.
+        if (ref.deref() === el) return candidate;
+        continue;
+      }
+      if (candidate === freshSelector) return candidate;
+      try {
+        const matches = document.querySelectorAll(candidate);
+        if (matches.length === 1 && matches[0] === el) return candidate;
+      } catch {
+        // A stored selector the browser cannot parse simply matches nothing.
+      }
+    }
+    return "";
+  }
+
+  function selectsOnly(parts) {
+    try {
+      return document.querySelectorAll(parts.join(" > ")).length === 1;
+    } catch {
+      return true;
+    }
+  }
+
   // `table` is opt-in because resolving a cell's row and column walks the whole table, while
   // `snapshot()` calls this for every element in the document and reads only uid/tag/text.
-  function context(el, { table = false } = {}) {
+  // `selector` is opt-out because generating one can query the whole document to prove it is
+  // unique, and `snapshot()` reads only uid/tag/text for every element.
+  function context(el, { table = false, withSelector = true } = {}) {
     const base = {
       uid: uid(el),
-      selector: selector(el),
+      selector: withSelector ? selector(el) : "",
       tag: (el.tagName || "").toLowerCase(),
       text: (el.innerText || el.textContent || "").trim().replace(/\s+/g, " ").slice(0, 240),
     };
@@ -823,7 +899,7 @@ export function createArtifactSdk(
     const tableTarget = table ? tableCellTarget(el, selector) : null;
     if (tableTarget) base.target = tableTarget;
 
-    const mermaidNode = mermaidNodeFrom(el, selector);
+    const mermaidNode = mermaidNodeFrom(el, withSelector ? selector : null);
     if (mermaidNode) {
       base.tag = "mermaid-node";
       base.text = mermaidNode.label || base.text;
@@ -1146,9 +1222,9 @@ export function createArtifactSdk(
   }
 
   // Native interactive controls (radios, checkboxes, inputs, selects, buttons,
-  // labels, disclosure summaries, editable regions) should toggle/focus/type
-  // natively instead of triggering annotation, just like elements marked with
-  // data-lavish-action.
+  // labels, disclosure summaries, editable regions, interactive ARIA widgets)
+  // should toggle/focus/type natively instead of triggering annotation, just
+  // like elements marked with data-lavish-action.
   function isInteractiveControl(el) {
     return isNativeInteractive(el);
   }
@@ -1190,7 +1266,7 @@ export function createArtifactSdk(
       style = document.createElement("style");
       style.id = "lavish-cursor-style";
       style.textContent =
-        ":root{--lavish-accent:#f4c95d;--lavish-annotate-outline:2px solid var(--lavish-accent);--lavish-annotate-offset:2px}*{cursor:default!important}[data-lavish-action],[data-lavish-action] *{cursor:pointer!important}input,textarea,[contenteditable]:not([contenteditable='false']){cursor:text!important}button,select,label,option,input[type='button'],input[type='submit'],input[type='reset'],input[type='checkbox'],input[type='radio'],input[type='file'],input[type='color'],input[type='range'],input[type='image']{cursor:pointer!important}";
+        ":root{--lavish-accent:#f4c95d;--lavish-annotate-outline:2px solid var(--lavish-accent);--lavish-annotate-offset:2px}*{cursor:default!important}:where(:is([role='button'],[role='checkbox'],[role='combobox'],[role='menuitem'],[role='menuitemcheckbox'],[role='menuitemradio'],[role='option'],[role='radio'],[role='switch'],[role='tab'],[role='treeitem']):not(a[href])),:where(:is([role='button'],[role='checkbox'],[role='combobox'],[role='menuitem'],[role='menuitemcheckbox'],[role='menuitemradio'],[role='option'],[role='radio'],[role='switch'],[role='tab'],[role='treeitem']):not(a[href])) *{cursor:pointer!important}:where(:is([role='button'],[role='checkbox'],[role='combobox'],[role='menuitem'],[role='menuitemcheckbox'],[role='menuitemradio'],[role='option'],[role='radio'],[role='switch'],[role='tab'],[role='treeitem']) a[href]),:where(:is([role='button'],[role='checkbox'],[role='combobox'],[role='menuitem'],[role='menuitemcheckbox'],[role='menuitemradio'],[role='option'],[role='radio'],[role='switch'],[role='tab'],[role='treeitem']) a[href]) *{cursor:default!important}[data-lavish-action],[data-lavish-action] *{cursor:pointer!important}input,textarea,[contenteditable]:not([contenteditable='false']){cursor:text!important}button,select,label,option,input[type='button'],input[type='submit'],input[type='reset'],input[type='checkbox'],input[type='radio'],input[type='file'],input[type='color'],input[type='range'],input[type='image']{cursor:pointer!important}";
       document.head.appendChild(style);
     }
     if (!annotationMode && style) style.remove();
@@ -1230,6 +1306,7 @@ export function createArtifactSdk(
       if (attachments.length) item.attachments = attachments;
     }
 
+    if (options.element) rememberQueuedAnchor(item, options.element);
     postArtifactMessage("lavish:queuePrompt", { prompt: item });
   }
 
@@ -1247,7 +1324,7 @@ export function createArtifactSdk(
     function walk(el, depth) {
       if (!(el instanceof Element) || depth > 6 || isLavishUi(el)) return;
 
-      const c = context(el);
+      const c = context(el, { withSelector: false });
       const name = c.text ? ' "' + c.text.slice(0, 80).replace(/"/g, "'") + '"' : "";
       lines.push("  ".repeat(depth) + "uid=" + c.uid + " " + c.tag + name);
       for (const child of el.children) walk(child, depth + 1);
@@ -2216,6 +2293,10 @@ export function createArtifactSdk(
     document.documentElement.appendChild(host);
 
     shadow = host.attachShadow({ mode: "open" });
+    // Keep the artifact's own key handlers from seeing, and cancelling, typing in Lavish controls.
+    for (const type of ["keydown", "keypress", "keyup"]) {
+      shadow.addEventListener(type, (event) => event.stopPropagation());
+    }
     const style = document.createElement("style");
     style.textContent = `:host{all:initial;position:fixed;z-index:2147483647;left:0;top:0;color-scheme:dark;--ink-900:#0f1115;--ink-800:#11141a;--ink-700:#171a21;--ink-600:#1c212b;--steel-700:#2a2f3a;--steel-600:#303745;--steel-500:#3c4557;--steel-400:#8c96aa;--steel-300:#aeb6c6;--steel-200:#b9c0cf;--steel-100:#d8deea;--cream-50:#fffbf3;--cream-100:#f7f3ea;--cream-200:#e8e1cf;--brass-500:#f4c95d;--brass-400:#ffd877;--brass-ink:#17130a;--bg:var(--ink-900);--bg-panel:var(--ink-800);--bg-elevated:var(--ink-600);--fg:var(--cream-100);--fg-faint:var(--steel-300);--border:var(--steel-600);--accent:#f4c95d;--accent-hover:#ffd877;--font-sans:Geist,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;--font-mono:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--radius-md:10px;--radius-xl:14px;--shadow-floating:0 20px 70px rgba(0,0,0,.35);font-family:var(--font-sans)}*{box-sizing:border-box}:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.lavish-text-highlight{position:fixed;pointer-events:none;background:rgba(244,201,93,.28);border-radius:2px;box-shadow:0 0 0 1px rgba(244,201,93,.45)}.lavish-annotation-card{position:fixed;width:min(320px,calc(100vw - 24px));padding:12px;border-radius:var(--radius-xl);background:var(--bg-panel);color:var(--fg);border:1px solid var(--accent);box-shadow:var(--shadow-floating);font:14px/1.4 var(--font-sans)}.lavish-heading{font-weight:700;margin-bottom:6px}.lavish-annotation-card textarea{width:100%;min-height:86px;resize:vertical;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--bg);color:var(--fg);padding:9px;font:inherit;font-family:var(--font-sans)}.lavish-annotation-card textarea::placeholder{color:var(--fg-faint)}.lavish-annotation-card .lavish-hint{margin-top:6px;font-size:11px;color:var(--fg-faint)}.lavish-annotation-card .lavish-hint-alert{color:#ff9d7a;font-weight:700}.lavish-annotation-card .lavish-row{display:flex;gap:8px;justify-content:flex-end;margin-top:8px}.lavish-annotation-card button{border:0;border-radius:var(--radius-md);padding:8px 10px;font-family:var(--font-sans);font-size:13px;font-weight:700;cursor:pointer}.lavish-annotation-card button:active{opacity:.85}.lavish-annotation-card .lavish-send{background:var(--accent);color:var(--brass-ink)}.lavish-annotation-card .lavish-send:hover{background:var(--accent-hover)}.lavish-annotation-card .lavish-cancel{background:var(--steel-700);color:var(--fg)}.lavish-annotation-card.is-dropping{outline:2px dashed var(--accent);outline-offset:3px}.lavish-attachments{display:flex;flex-direction:column;gap:6px;margin-top:8px;max-height:176px;overflow-y:auto}.lavish-attachment-chip{display:flex;align-items:center;gap:8px;padding:6px;border-radius:var(--radius-md);background:var(--bg);border:1px solid var(--border)}.lavish-attachment-chip.is-error{border-color:#e0623d}.lavish-attachment-thumb{width:32px;height:32px;border-radius:6px;object-fit:cover;background:var(--ink-700);flex:0 0 auto}.lavish-attachment-thumb-empty{display:inline-block}.lavish-attachment-body{display:flex;flex-direction:column;gap:1px;min-width:0;flex:1 1 auto}.lavish-attachment-name{font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.lavish-attachment-status{font-size:11px;color:var(--fg-faint)}.lavish-attachment-status-error{color:#ff9d7a}.lavish-attachment-retry{flex:0 0 auto;padding:4px 8px;font-size:11px;font-weight:700;border-radius:8px;background:var(--steel-700);color:var(--fg);cursor:pointer;border:0}.lavish-attachment-remove{flex:0 0 auto;display:flex;align-items:center;justify-content:center;width:22px;height:22px;padding:0!important;border-radius:50%;background:transparent;color:rgba(255,255,255,.85);cursor:pointer;border:0}.lavish-attachment-remove:hover{background:rgba(255,255,255,.14);color:#fff}.lavish-attach-row{margin-top:8px}.lavish-attach{display:inline-flex;align-items:center;gap:6px;padding:6px 9px!important;background:var(--steel-700)!important;color:var(--fg)!important;font-size:12px!important}.lavish-attach:hover{background:var(--steel-600)!important}.lavish-reveal-marker{position:fixed;pointer-events:none;border:2px solid var(--accent);border-radius:4px;box-shadow:0 0 0 4px rgba(244,201,93,.22);animation:lavish-reveal-pulse 2.4s var(--ease,ease-out) forwards}@keyframes lavish-reveal-pulse{0%{opacity:0}12%{opacity:1}70%{opacity:1}100%{opacity:0}}`;
     shadow.appendChild(style);
@@ -2223,6 +2304,7 @@ export function createArtifactSdk(
   }
 
   function closeCard() {
+    const hadCard = activeCardContext !== null;
     activeCardContext = null;
     if (activeAttachments) {
       activeAttachments.destroy();
@@ -2236,7 +2318,15 @@ export function createArtifactSdk(
     hovered = null;
     clearTextHighlight();
     selected = null;
-    scheduleReviewStateReport();
+    // Only a card that was open has state to retire. Reporting `card: null` with nothing open
+    // (a page declaring data-lavish-annotate="off" closes at boot) would overwrite a stored
+    // draft the chrome has not replayed yet, because that replay waits for the frame's load event.
+    if (hadCard) scheduleReviewStateReport();
+  }
+
+  // Apple platforms use Cmd where others use Ctrl, both for shortcut hints and link-follow clicks.
+  function isApplePlatform() {
+    return /Mac|iP(hone|ad|od)/.test(navigator.platform);
   }
 
   function showAnnotationCard(target, options = {}) {
@@ -2284,7 +2374,7 @@ export function createArtifactSdk(
           : c.tag === "mermaid-node"
             ? "Tell the agent what to change about this diagram node..."
             : "Tell the agent what to change about this element...";
-    const sendNowHint = /Mac|iP(hone|ad|od)/.test(navigator.platform) ? "⌘" : "Ctrl";
+    const sendNowHint = isApplePlatform() ? "⌘" : "Ctrl";
     card.innerHTML =
       '<div class="lavish-heading">' +
       heading +
@@ -2402,6 +2492,7 @@ export function createArtifactSdk(
       // refers to), but never queue an empty card.
       if (prompt || readyAttachments.length) {
         queuePrompt(prompt, { ...c, queueKey: "", attachments: readyAttachments });
+        rememberQueuedAnchor(c, target);
       }
       closeCard();
       return true;
@@ -2412,13 +2503,14 @@ export function createArtifactSdk(
       tryQueue();
     };
     textarea.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+      // WebKit fires compositionend before the IME-confirming keydown, leaving only keyCode 229 to mark it.
+      if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
         event.preventDefault();
         const sendNow = (event.ctrlKey || event.metaKey) && (!!textarea.value.trim() || attachments.hasReady());
         const queued = tryQueue();
         // postMessage delivery is ordered, so the queued prompt lands before the send.
         if (queued && sendNow) sendQueuedPrompts();
-      } else if (event.key === "Escape" && !event.isComposing) {
+      } else if (event.key === "Escape" && !event.isComposing && event.keyCode !== 229) {
         // Close only when there is nothing to lose; excludes isComposing since mid-IME text isn't in textarea.value yet.
         if (textarea.value.trim() || attachments.hasPending() || attachments.hasErrors() || attachments.hasReady())
           return;
@@ -2447,12 +2539,27 @@ export function createArtifactSdk(
     return (dataTransfer.types || []).includes?.("Files");
   }
 
+  // Asks the chrome to mirror the page's live title and/or icon onto the outer browser tab. The
+  // chrome owns the validation (length cap, SVG data: icons only); a string sets the field, `null`
+  // restores what the tab loaded with, and a field left out stays as it is.
+  /** @param {{ title?: string | null, icon?: string | null }} [meta] */
+  function setDocumentMeta(meta) {
+    /** @type {{ title?: string | null, icon?: string | null }} */
+    const payload = {};
+    for (const field of /** @type {const} */ (["title", "icon"])) {
+      const value = meta?.[field];
+      if (typeof value === "string" || value === null) payload[field] = value;
+    }
+    postArtifactMessage("lavish:documentMeta", payload);
+  }
+
   /** @type {Window & { lavish?: unknown }} */ (window).lavish = {
     queuePrompt,
     sendQueuedPrompts,
     endSession,
     getQueuedPrompts: () => [],
     setStatus: (message) => postArtifactMessage("lavish:status", { message: String(message) }),
+    setDocumentMeta,
     snapshot,
   };
 
@@ -2477,25 +2584,56 @@ export function createArtifactSdk(
     }
     if (msg.type === "lavish:restoreReviewState") restoreReviewState(msg.state);
     if (msg.type === "lavish:revealElement") revealElement(msg.selector);
+    if (msg.type === "lavish:queuedAnchors") {
+      queuedAnchorSelectors = new Set(Array.isArray(msg.selectors) ? msg.selectors.map(String) : []);
+    }
+    if (msg.type === "lavish:annotateElement" && annotationMode) {
+      const queued = queuedAnchorElements.get(msg.selector)?.deref();
+      const target = queued && queued.isConnected !== false ? queued : safeQuerySelector(msg.selector);
+      if (target) showAnnotationCard(target);
+    }
   });
 
   // Bring a warning's element into view and flash it. The marker is Lavish UI, so it is excluded
   // from the layout audit and never becomes a finding of its own.
+  let stopRevealTracking = () => {};
   function revealElement(selector) {
     const target = selector === "html" ? document.documentElement : safeQuerySelector(selector);
     if (!(target instanceof Element)) return;
     target.scrollIntoView({ block: "center", inline: "center", behavior: "smooth" });
+    stopRevealTracking();
     const root = ensureShadow();
     for (const el of [...root.querySelectorAll(".lavish-reveal-marker")]) el.remove();
-    const rect = target.getBoundingClientRect();
     const marker = document.createElement("div");
     marker.className = "lavish-reveal-marker";
-    marker.style.left = rect.left + "px";
-    marker.style.top = rect.top + "px";
-    marker.style.width = Math.max(rect.width, 4) + "px";
-    marker.style.height = Math.max(rect.height, 4) + "px";
+    // The smooth scroll has only started when scrollIntoView returns, so the rect read now is the
+    // pre-scroll one. Re-measure the target every frame while the marker lives, which keeps the
+    // fixed marker on it as the smooth scroll settles, inside nested scroll containers, in
+    // browsers without `scrollend`, and when the reviewer scrolls during the flash.
+    const place = () => {
+      const rect = target.getBoundingClientRect();
+      marker.style.left = rect.left + "px";
+      marker.style.top = rect.top + "px";
+      marker.style.width = Math.max(rect.width, 4) + "px";
+      marker.style.height = Math.max(rect.height, 4) + "px";
+    };
+    let tracking = true;
+    const follow = () => {
+      if (!tracking) return;
+      place();
+      window.requestAnimationFrame(follow);
+    };
+    const stop = () => {
+      tracking = false;
+    };
+    stopRevealTracking = stop;
+    place();
     root.appendChild(marker);
-    window.setTimeout(() => marker.remove(), 2400);
+    window.requestAnimationFrame(follow);
+    window.setTimeout(() => {
+      stop();
+      marker.remove();
+    }, 2400);
   }
 
   // Capture phase so the mode hotkey fires no matter where focus is inside the artifact -
@@ -2587,10 +2725,29 @@ export function createArtifactSdk(
         isInteractiveControl(event.target)
       )
         return;
+      // Cmd-click (macOS) or Ctrl-click (elsewhere) on a link follows it (the browser opens a new
+      // tab) instead of annotating, so links stay usable without leaving annotate mode. Meta off
+      // macOS is the Super/Windows key, not a follow gesture, so it annotates like a plain click.
+      // Checked before the queued-note branch so the modifier always wins, and it clears a pending
+      // text-selection swallow so the next plain click is not eaten.
+      const followModifier = isApplePlatform() ? event.metaKey : event.ctrlKey;
+      if (followModifier && /** @type {Element} */ (event.target)?.closest?.("a[href]")) {
+        ignoreNextClick = false;
+        return;
+      }
       event.preventDefault();
       event.stopPropagation();
       if (ignoreNextClick) {
         ignoreNextClick = false;
+        return;
+      }
+      // The clicked element's own note, then its diagram node's, so any click inside a node finds
+      // the node's note again. A table cell's note stays on the exact element clicked.
+      const clicked = queuedAnchorSelectors.size ? context(event.target) : null;
+      const selector = clicked ? queuedAnchorFor(event.target, clicked) : "";
+      if (selector) {
+        closeCard();
+        postArtifactMessage("lavish:editQueuedAnchor", { selector });
         return;
       }
       showAnnotationCard(event.target);
@@ -2599,6 +2756,8 @@ export function createArtifactSdk(
   );
 
   setAnnotationMode(annotationMode);
+  // Report the page default once; subsequent mode changes belong to the chrome.
+  postArtifactMessage("lavish:annotationMode", { enabled: initialAnnotationMode });
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", startLayoutAudit, { once: true });
   } else {

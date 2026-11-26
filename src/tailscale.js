@@ -1,5 +1,8 @@
 import { execFile } from "node:child_process";
+import { access, stat } from "node:fs/promises";
+import { constants } from "node:fs";
 import { isIP } from "node:net";
+import path from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -66,10 +69,29 @@ export function parseTailscaleStatus(raw) {
   return { ipv4, magicDnsName };
 }
 
+async function resolveTailscaleCommand(command, env) {
+  const candidates = path.isAbsolute(command)
+    ? [command]
+    : (env.PATH ?? (process.platform === "win32" ? "" : "/usr/bin:/bin")).split(path.delimiter).flatMap((directory) => {
+        const candidate = path.resolve(directory, command);
+        return process.platform === "win32" ? [candidate, `${candidate}.exe`] : [candidate];
+      });
+  for (const candidate of candidates) {
+    try {
+      if (!(await stat(candidate)).isFile()) continue;
+      await access(candidate, constants.X_OK);
+      return candidate;
+    } catch {
+      // Missing or inaccessible candidates must not trigger a launch attempt.
+    }
+  }
+  return null;
+}
+
 /**
  * Detect a running Tailscale node on this machine. Missing binary, a stopped
  * tailnet, or any error returns null - never throws.
- * @param {{ execFile?: typeof execFileAsync, timeoutMs?: number, commands?: string[], now?: () => number }} [options]
+ * @param {{ execFile?: typeof execFileAsync, timeoutMs?: number, commands?: string[], now?: () => number, env?: NodeJS.ProcessEnv, resolveCommand?: typeof resolveTailscaleCommand }} [options]
  * @returns {Promise<TailscaleNet | IncompleteTailscaleNet | null>}
  */
 export async function detectTailscale({
@@ -77,14 +99,19 @@ export async function detectTailscale({
   timeoutMs = 2000,
   commands = tailscaleCommandCandidates(),
   now = Date.now,
+  env = process.env,
+  resolveCommand = resolveTailscaleCommand,
 } = {}) {
   const deadline = now() + timeoutMs;
   let incompleteRunningStatus = false;
   for (const command of commands) {
-    const remainingMs = deadline - now();
-    if (remainingMs <= 0) break;
+    if (deadline - now() <= 0) break;
     try {
-      const { stdout } = await execFile(command, ["status", "--json"], {
+      const resolvedCommand = await resolveCommand(command, env);
+      if (!resolvedCommand) continue;
+      const remainingMs = deadline - now();
+      if (remainingMs <= 0) break;
+      const { stdout } = await execFile(resolvedCommand, ["status", "--json"], {
         timeout: remainingMs,
         maxBuffer: 2_000_000,
         encoding: "utf8",

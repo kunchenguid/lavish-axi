@@ -84,6 +84,8 @@ test("createSkillMarkdown stays a short stub that defers to the CLI", () => {
   assert.ok(md.length <= MAX_SKILL_MARKDOWN_CHARS, "the generated skill stays drastically smaller than CLI guidance");
   assert.match(md, /Lavish Editor/);
   assert.match(md, /`npx -y lavish-axi --help`/);
+  assert.match(md, /`npx -y lavish-axi reply --help`/);
+  assert.match(md, /not about to long-poll/);
   assert.match(md, /`npx -y lavish-axi design`/);
   assert.match(md, /`npx -y lavish-axi playbook <id>`/);
   assert.match(md, /stale/i);

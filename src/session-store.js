@@ -15,7 +15,17 @@ import {
   serializeLayoutWarnings,
 } from "./layout-warnings.js";
 import { AsyncMutex } from "./async-mutex.js";
-import { boundStoredChat, chatEntryForPrompt, collectChatAckIds, normalizePromptId } from "./chat-messages.js";
+import {
+  boundStoredChat,
+  chatEntryForPrompt,
+  collectChatAckIds,
+  markPreReceipt,
+  normalizePromptId,
+  stampDelivered,
+  stampDone,
+  stampWorking,
+  unstampDelivery,
+} from "./chat-messages.js";
 import { normalizeMermaidNodeTarget } from "./mermaid-node.js";
 import { EXCALIDRAW_SCENE_TARGET_TYPE, normalizeExcalidrawSceneTarget } from "./whiteboard-core.js";
 
@@ -143,6 +153,14 @@ export class SessionStore {
       // Compact prompt_id acks for bubbles evicted by the stored-chat byte bound. Reopening
       // must keep them: they are the settlement/dedup source once the visible entry is gone.
       chat_ack_ids: Array.isArray(existing.chat_ack_ids) ? existing.chat_ack_ids : [],
+      // Counts the takes that stamped Seen on chat entries (docs/delivery-acks.md). Reset on reopen
+      // and a later restore could un-stamp an older take's entries, so it is carried like chat.
+      delivery_seq: normalizeRevision(existing.delivery_seq),
+      // The last take of the rounds that have ended. Reopening starts a new round: a note an ended
+      // round left at Seen stays Seen, because a later round's edit or reply is not about it.
+      closed_delivery_seq: normalizeRevision(
+        existing.status === "ended" ? existing.delivery_seq : existing.closed_delivery_seq,
+      ),
       updated_at: new Date().toISOString(),
     };
     state.sessions[key] = session;
@@ -222,7 +240,15 @@ export class SessionStore {
         else delete prompt.attachments;
       }
     }
+    // Nothing reached an agent, so the Seen stamps that take wrote come off again - only that
+    // take's: a note queued in the window is unstamped already and is delivered by the next take.
+    // This holds whether or not the batch can be put back: a refused restore loses the prompts, and
+    // a note left Seen would then claim a delivery that never happened.
+    const deliverySeq = restoring ? normalizeRevision(payload.delivery_seq) : 0;
+    const unstamped = deliverySeq > 0 && unstampDelivery(session.chat, deliverySeq);
+    if (unstamped) session.chat_revision = normalizeRevision(session.chat_revision) + 1;
     if (rejected.length) {
+      if (unstamped) await this.writeState(state);
       return {
         rejected: rejected.slice(0, MAX_REPORTED_ATTACHMENT_REJECTIONS),
         caps: {
@@ -608,12 +634,17 @@ export class SessionStore {
       if (prompts.length === 0 && artifactFailures.length === 0) {
         return alreadyEnded ? { status: "ended", ended_by: session.ended_by } : { status: "waiting" };
       }
+      // Seen (docs/delivery-acks.md): this take drains every pending prompt and `queuePrompts`
+      // shares this lock, so the user entries with no stamp are exactly this batch. The sequence
+      // rides on the result so a closed-poll restore can undo only this take's stamps.
+      const deliverySeq = normalizeRevision(session.delivery_seq) + 1;
       const result = {
         status: "feedback",
         dom_snapshot: session.dom_snapshot || "",
         prompts,
         ...(artifactFailures.length > 0 ? { artifact_failures: artifactFailures } : {}),
         ...(alreadyEnded ? { session_ended: true, ended_by: session.ended_by } : {}),
+        ...(prompts.length > 0 ? { delivery_seq: deliverySeq } : {}),
       };
       // Delivery clears pending prompts, so retain the attachment ids for a bounded
       // grace window while the polling agent opens the absolute paths it received.
@@ -637,6 +668,12 @@ export class SessionStore {
       const current = [...deliveredIds].map((id) => ({ id, at: deliveredNow }));
       const historyRoom = Math.max(0, MAX_DELIVERED_ATTACHMENTS - current.length);
       session.delivered_attachments = [...carried.slice(-historyRoom), ...current];
+      if (prompts.length > 0) {
+        session.delivery_seq = deliverySeq;
+        if (stampDelivered(session.chat, deliverySeq, new Date(deliveredNow).toISOString())) {
+          session.chat_revision = normalizeRevision(session.chat_revision) + 1;
+        }
+      }
       session.prompts = [];
       session.artifact_failures = [];
       session.pending_prompts = 0;
@@ -670,16 +707,37 @@ export class SessionStore {
     });
   }
 
-  async addAgentReply(key, text) {
+  async addAgentReply(key, text, { requireOpen = false } = {}) {
     return this.runExclusive(async () => {
       const state = await this.readState();
       const session = state.sessions[key];
       if (!session) {
         return null;
       }
+      if (requireOpen && session.status === "ended") return session;
       const at = new Date().toISOString();
+      // Done (docs/delivery-acks.md): the reply answers what the agent has seen. Stamped in the same
+      // write as the reply, with the reply's own time, and never on an entry no poll has delivered.
+      stampDone(session.chat, at, normalizeRevision(session.closed_delivery_seq));
       session.chat = [...(session.chat || []), { role: "agent", text: String(text || ""), at }];
       applyTranscriptBound(session);
+      session.chat_revision = normalizeRevision(session.chat_revision) + 1;
+      session.updated_at = at;
+      await this.writeState(state);
+      return session;
+    });
+  }
+
+  // Working (docs/delivery-acks.md): the artifact changed after a delivery, so the agent is acting on
+  // what it was handed. Returns the session when a stamp landed and null when there was nothing to
+  // stamp, in which case state.json is not rewritten - the watcher fires on every save.
+  async markWorking(key) {
+    return this.runExclusive(async () => {
+      const state = await this.readState();
+      const session = state.sessions[key];
+      if (!session) return null;
+      const at = new Date().toISOString();
+      if (!stampWorking(session.chat, at, normalizeRevision(session.closed_delivery_seq))) return null;
       session.chat_revision = normalizeRevision(session.chat_revision) + 1;
       session.updated_at = at;
       await this.writeState(state);
@@ -731,7 +789,17 @@ export class SessionStore {
       const state = { sessions: parsed.sessions || {} };
       let changed = false;
       for (const session of Object.values(state.sessions)) {
-        if (!session || typeof session !== "object" || !applyTranscriptBound(session)) continue;
+        if (!session || typeof session !== "object") continue;
+        // A session the receipt code has never written has no `delivery_seq` key at all. Its user
+        // entries predate receipts, so they are marked out of the stamping rule once, here, on the
+        // one load path every operation shares (docs/delivery-acks.md). Persisted at once: the
+        // marker must exist before the first take, which may run without any upsert.
+        if (!("delivery_seq" in session)) {
+          session.delivery_seq = 0;
+          markPreReceipt(session.chat);
+          changed = true;
+        }
+        if (!applyTranscriptBound(session)) continue;
         session.chat_revision = normalizeRevision(session.chat_revision) + 1;
         changed = true;
       }

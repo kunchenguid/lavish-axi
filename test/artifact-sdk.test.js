@@ -67,6 +67,9 @@ function matchesSelector(el, selector) {
     const value = el.getAttribute("contenteditable");
     return value !== null && value !== "false";
   }
+  if (selector === "a[href]") return el.tagName.toLowerCase() === "a" && el.getAttribute("href") !== null;
+  const attributeValue = selector.match(/^\[([a-z-]+)='([^']*)'\]$/i);
+  if (attributeValue) return el.getAttribute(attributeValue[1]) === attributeValue[2];
   if (/^[a-z]+$/i.test(selector)) return el.tagName.toLowerCase() === selector.toLowerCase();
   return false;
 }
@@ -83,6 +86,67 @@ test("isNativeInteractiveControl leaves details body descendants annotatable", (
   assert.equal(isNativeInteractiveControl(details), false);
   assert.equal(isNativeInteractiveControl(bodyText), false);
   assert.equal(isNativeInteractiveControl(bodyLink), false);
+});
+
+test("isNativeInteractiveControl passes through interactive ARIA widgets and their descendants", () => {
+  for (const role of [
+    "button",
+    "checkbox",
+    "combobox",
+    "menuitem",
+    "menuitemcheckbox",
+    "menuitemradio",
+    "option",
+    "radio",
+    "switch",
+    "tab",
+    "treeitem",
+  ]) {
+    const label = node("span");
+    const widget = node("div", { role }, [label]);
+    node("div", {}, [widget]);
+
+    assert.equal(isNativeInteractiveControl(widget), true, role);
+    assert.equal(isNativeInteractiveControl(label), true, role);
+  }
+});
+
+test("isNativeInteractiveControl leaves ARIA content and link roles annotatable", () => {
+  for (const role of ["link", "menu", "listbox", "dialog", "region", "presentation"]) {
+    assert.equal(isNativeInteractiveControl(node("div", { role })), false, role);
+  }
+});
+
+test("isNativeInteractiveControl leaves anchors with a widget role annotatable", () => {
+  for (const role of ["menuitem", "tab", "button"]) {
+    const label = node("span");
+    const anchor = node("a", { href: "/details", role }, [label]);
+    node("div", {}, [anchor]);
+
+    assert.equal(isNativeInteractiveControl(anchor), false, role);
+    assert.equal(isNativeInteractiveControl(label), false, role);
+  }
+});
+
+test("isNativeInteractiveControl leaves a link inside a widget annotatable", () => {
+  const label = node("span");
+  const link = node("a", { href: "/details" }, [label]);
+  const sibling = node("span");
+  const widget = node("div", { role: "menuitem" }, [link, sibling]);
+
+  assert.equal(isNativeInteractiveControl(link), false);
+  assert.equal(isNativeInteractiveControl(label), false);
+  assert.equal(isNativeInteractiveControl(widget), true);
+  assert.equal(isNativeInteractiveControl(sibling), true);
+});
+
+test("isNativeInteractiveControl passes through a widget inside a link", () => {
+  const label = node("span");
+  const widget = node("span", { role: "button" }, [label]);
+  node("a", { href: "/details" }, [widget]);
+
+  assert.equal(isNativeInteractiveControl(widget), true);
+  assert.equal(isNativeInteractiveControl(label), true);
 });
 
 test("isNativeInteractiveControl allows details as a text selection ancestor", () => {

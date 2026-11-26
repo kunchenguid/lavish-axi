@@ -6,10 +6,16 @@ import {
   boundStoredChat,
   chatEntryForPrompt,
   collectChatAckIds,
+  markPreReceipt,
   MAX_CHAT_STORED_BYTES,
+  RECEIPT_NONE,
   renderChatMarkdown,
   serializeChat,
+  stampDelivered,
+  stampDone,
+  stampWorking,
   storedChatBytes,
+  unstampDelivery,
 } from "../src/chat-messages.js";
 
 // The renderer is what turns an agent's `--agent-reply` into something a reviewer can scan in a
@@ -391,4 +397,73 @@ test("boundStoredChat never lets a single oversize entry exceed the hard cap", (
   assert.deepEqual(chat, []);
   assert.deepEqual(evicted, [huge]);
   assert.ok(storedChatBytes(chat) <= 50);
+});
+
+// Delivery-ack stamps (docs/delivery-acks.md) are pure over the chat array.
+
+/** @returns {Record<string, any>} */
+function userEntry(text, extra = {}) {
+  return { role: "user", kind: "message", text, at, ...extra };
+}
+
+test("delivery stamps mark only undelivered user entries and tie them to one take", () => {
+  const chat = [userEntry("A"), { role: "agent", text: "hi", at }, userEntry("B")];
+  assert.equal(stampDelivered(chat, 3, "2026-09-15T12:01:00.000Z"), true);
+  assert.deepEqual(chat[0], userEntry("A", { delivered_at: "2026-09-15T12:01:00.000Z", delivered_seq: 3 }));
+  assert.deepEqual(chat[1], { role: "agent", text: "hi", at });
+  assert.equal(chat[2].delivered_seq, 3);
+  assert.equal(stampDelivered(chat, 4, "2026-09-15T12:02:00.000Z"), false, "nothing left to stamp");
+  assert.equal(chat[0].delivered_seq, 3);
+});
+
+test("unstamping a take deletes that take's stamps and leaves other takes and unsent entries intact", () => {
+  const chat = [
+    userEntry("A", { delivered_at: at, delivered_seq: 1, working_at: at, done_at: at }),
+    userEntry("B", { delivered_at: at, delivered_seq: 2, working_at: at }),
+    userEntry("C"),
+  ];
+  assert.equal(unstampDelivery(chat, 2), true);
+  assert.deepEqual(chat[1], userEntry("B"));
+  assert.equal(chat[0].delivered_seq, 1);
+  assert.deepEqual(chat[2], userEntry("C"));
+  assert.equal(unstampDelivery(chat, 9), false);
+});
+
+test("working and done stamp delivered entries once and never an undelivered one", () => {
+  const chat = [userEntry("A", { delivered_at: at, delivered_seq: 1 }), userEntry("B")];
+  assert.equal(stampWorking(chat, "2026-09-15T12:03:00.000Z"), true);
+  assert.equal(chat[0].working_at, "2026-09-15T12:03:00.000Z");
+  assert.equal("working_at" in chat[1], false);
+  assert.equal(stampWorking(chat, "2026-09-15T12:04:00.000Z"), false);
+  assert.equal(chat[0].working_at, "2026-09-15T12:03:00.000Z");
+
+  assert.equal(stampDone(chat, "2026-09-15T12:05:00.000Z"), true);
+  assert.equal(chat[0].done_at, "2026-09-15T12:05:00.000Z");
+  assert.equal("done_at" in chat[1], false);
+  assert.equal(stampDone(chat, "2026-09-15T12:06:00.000Z"), false);
+  assert.equal(stampWorking(chat, "2026-09-15T12:07:00.000Z"), false, "a done entry is not re-marked working");
+});
+
+test("serializeChat carries the delivery stamps to the chrome", () => {
+  const [entry] = serializeChat([
+    userEntry("A", { delivered_at: "d", delivered_seq: 1, working_at: "w", done_at: "x" }),
+  ]);
+  assert.equal(entry.delivered_at, "d");
+  assert.equal(entry.working_at, "w");
+  assert.equal(entry.done_at, "x");
+});
+
+test("pre-receipt entries are marked once and excluded from every stamp", () => {
+  const chat = [userEntry("Old"), { role: "agent", text: "ok", at }, userEntry("Also old")];
+  assert.equal(markPreReceipt(chat), true);
+  assert.equal(chat[0].receipt, RECEIPT_NONE);
+  assert.equal("receipt" in chat[1], false);
+  assert.equal(markPreReceipt(chat), false, "idempotent");
+  chat.push(userEntry("New"));
+  assert.equal(stampDelivered(chat, 1, at), true);
+  assert.equal("delivered_at" in chat[0], false);
+  assert.equal(chat[3].delivered_seq, 1);
+  assert.equal(stampWorking(chat, at), true);
+  assert.equal(stampDone(chat, at), true);
+  assert.deepEqual(chat[0], userEntry("Old", { receipt: RECEIPT_NONE }));
 });

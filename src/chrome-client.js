@@ -119,6 +119,8 @@ const panelHead = /** @type {HTMLDivElement} */ (document.getElementById("panelH
 const panelSummary = /** @type {HTMLSpanElement} */ (document.getElementById("panelSummary"));
 const panelToggle = /** @type {HTMLButtonElement} */ (document.getElementById("panelToggle"));
 const panelScrim = /** @type {HTMLDivElement} */ (document.getElementById("panelScrim"));
+const sidebarToggle = /** @type {HTMLButtonElement} */ (document.getElementById("sidebarToggle"));
+const sidebarToggleCount = /** @type {HTMLSpanElement} */ (document.getElementById("sidebarToggleCount"));
 const sendButton = /** @type {HTMLButtonElement} */ (document.getElementById("send"));
 const sendAndEndButton = /** @type {HTMLButtonElement} */ (document.getElementById("sendAndEnd"));
 const annotationSwitch = /** @type {HTMLButtonElement} */ (document.getElementById("annotation"));
@@ -193,6 +195,9 @@ const artifactSrc = frame.dataset.artifactSrc || frame.getAttribute?.("data-arti
 
 const queued = loadQueuedPrompts();
 let annotation = true;
+// Page defaults follow artifact loads until the reviewer explicitly chooses a mode.
+let annotationOverridden = false;
+let annotationDefaultReceived = false;
 let ended = false;
 let agentPresence = "waiting";
 const layoutGateEnabled = sessionData.layoutGateEnabled !== false;
@@ -261,6 +266,12 @@ let terminalSubmission =
 /** @type {ReturnType<typeof setTimeout> | undefined} */
 let sendAcknowledgementTimer;
 let lastScroll = { x: 0, y: 0 };
+// The queued note open for editing in the panel, by prompt identity, and its unsaved words.
+let editingPromptId = "";
+let editingDraft = "";
+let editFocusPending = false;
+// The selector list last told to the artifact, so a render that changes nothing stays quiet.
+let postedQueuedAnchors = "[]";
 // In-iframe review context (an open annotation card's unsent text, Lavish-owned question
 // answers). The sandbox means the chrome cannot read it back after a reload, so the SDK reports
 // it as it changes and the chrome replays it once the new document is up. It is persisted per
@@ -486,6 +497,8 @@ function persistTerminalReservation(reserved) {
 
 const REMOVE_ICON_SVG =
   '<svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true" focusable="false"><path d="M1 1L9 9M9 1L1 9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
+const EDIT_ICON_SVG =
+  '<svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true" focusable="false"><path d="M6.5 1.5L8.5 3.5L3.5 8.5H1.5V6.5L6.5 1.5Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>';
 const ANCHOR_EXCERPT_MAX = 120;
 const ANCHOR_SELECTOR_MAX = 512;
 const ANCHOR_LABEL_MAX = 40;
@@ -587,20 +600,48 @@ function userBubbleTextHtml(entry, text) {
 }
 
 // A queued note is the user bubble in its not-yet-sent state: dashed, labelled Queued (Sending
-// while its batch is in flight), and removable until then. It settles in place as a sent bubble
-// once the server's transcript carries it, so nothing moves between regions.
+// while its batch is in flight), and editable and removable until then. It settles in place as a
+// sent bubble once the server's transcript carries it, so nothing moves between regions.
 function queuedBubbleHtml(prompt, index) {
   const sending = isPromptSending(prompt);
+  if (!sending && editingPromptId && promptIdentity(prompt) === editingPromptId) {
+    return queuedEditorHtml(prompt, index);
+  }
   return (
-    '<div class="bubble user queued"><small>' +
+    '<div class="bubble user queued" data-index="' +
+    index +
+    '"><small>' +
     (sending ? "Sending\u2026" : "Queued") +
-    ' <button class="queued-remove" type="button" aria-label="Remove queued prompt" data-index="' +
+    ' <button class="queued-edit" type="button" aria-label="Edit queued prompt" data-index="' +
+    index +
+    '">' +
+    EDIT_ICON_SVG +
+    '</button><button class="queued-remove" type="button" aria-label="Remove queued prompt" data-index="' +
     index +
     '">' +
     REMOVE_ICON_SVG +
     "</button></small>" +
     anchorHtml(promptAnchor(prompt)) +
     userBubbleTextHtml(prompt, prompt.prompt) +
+    bubbleAttachmentsHtml(prompt) +
+    "</div>"
+  );
+}
+
+// The same bubble while its words are being revised. The anchor and images stay as they were:
+// an edit changes what the note says, not what it points at.
+function queuedEditorHtml(prompt, index) {
+  return (
+    '<div class="bubble user queued editing" data-index="' +
+    index +
+    '"><small>Editing</small>' +
+    anchorHtml(promptAnchor(prompt)) +
+    '<textarea class="queued-edit-input" aria-label="Edit queued prompt" data-index="' +
+    index +
+    '">' +
+    escapeHtml(editingDraft) +
+    '</textarea><div class="queued-edit-actions"><button class="queued-edit-cancel" type="button">Cancel</button>' +
+    '<button class="queued-edit-save" type="button">Save</button></div>' +
     bubbleAttachmentsHtml(prompt) +
     "</div>"
   );
@@ -624,6 +665,23 @@ function isPromptSending(prompt) {
 }
 
 function render() {
+  const editing = editingPromptId ? queued.find((prompt) => promptIdentity(prompt) === editingPromptId) : null;
+  // A note that left the queue or started sending takes its editor with it.
+  if (editingPromptId && (!editing || !isPromptEditable(editing))) endQueuedEdit();
+  const keepEditFocus = editFocusPending || queuedLog.contains(document.activeElement);
+  // A re-render while the reviewer is typing keeps their caret and scroll; only a freshly opened
+  // edit starts at the end of its words.
+  const previousInput = /** @type {HTMLTextAreaElement | null} */ (queuedLog.querySelector(".queued-edit-input"));
+  const caret =
+    !editFocusPending && previousInput && previousInput === document.activeElement
+      ? {
+          start: previousInput.selectionStart,
+          end: previousInput.selectionEnd,
+          direction: previousInput.selectionDirection,
+          scrollTop: previousInput.scrollTop,
+        }
+      : null;
+  editFocusPending = false;
   queuedLog.innerHTML = queued.map((prompt, index) => queuedBubbleHtml(prompt, index)).join("");
 
   for (const button of queuedLog.querySelectorAll(".queued-remove")) {
@@ -632,6 +690,23 @@ function render() {
     removeButton.disabled = terminalSubmission !== null || isPromptSending(prompt);
     removeButton.addEventListener("click", (event) => removeQueuedPrompt(Number(removeButton.dataset.index), event));
   }
+  for (const button of queuedLog.querySelectorAll(".queued-edit")) {
+    const editButton = /** @type {HTMLButtonElement} */ (button);
+    editButton.disabled = !isPromptEditable(queued[Number(editButton.dataset.index)]);
+  }
+  if (editingPromptId && keepEditFocus) {
+    const input = /** @type {HTMLTextAreaElement | null} */ (queuedLog.querySelector(".queued-edit-input"));
+    if (input) {
+      input.focus();
+      if (caret) {
+        input.setSelectionRange?.(caret.start, caret.end, caret.direction);
+        input.scrollTop = caret.scrollTop;
+      } else {
+        input.setSelectionRange?.(input.value.length, input.value.length);
+      }
+    }
+  }
+  postQueuedAnchors();
   updateSendState();
   scrollPanelToBottom();
   renderSheetSummary();
@@ -718,7 +793,11 @@ function replaceExpiredThumbnail(event) {
 
 chatLog.addEventListener("error", replaceExpiredThumbnail, true);
 
-const DEFAULT_SEND_HINT = "Write a message or annotate an element first.";
+const UNSENT_OWNERSHIP_COPY =
+  "Unsent answers stay in the tab or window where you entered them; taking over in another window does not bring them along.";
+const DEFAULT_SEND_HINT = "Nothing queued in this tab. " + UNSENT_OWNERSHIP_COPY;
+const EMPTY_SEND_HINT_HOLD_MS = 9000;
+const EMPTY_END_HINT = "Nothing to send. To end without feedback, use End session in the More menu (⋮).";
 
 function showSendHint(message = DEFAULT_SEND_HINT, holdMs = 2600, focusInput = true) {
   sendHint.textContent = message;
@@ -842,8 +921,73 @@ function chatBubbleHtml(entry) {
     "<small>You</small>" +
     anchorHtml(entry.anchor) +
     userBubbleTextHtml(entry, entry.text) +
-    bubbleAttachmentsHtml(entry)
+    bubbleAttachmentsHtml(entry) +
+    receiptHtml(entry)
   );
+}
+
+// Delivery receipt (docs/delivery-acks.md): the per-note view of what the server observed. Seen,
+// Working, and Done are stamps on the entry, so the row is derived from it on every render and
+// never tracked here. Before Seen, the row says why, from the presence the live stream reports.
+// The three steps are the emoji of the Telegram ack protocol the receipt mirrors (seen, working,
+// done); a step that has not happened is the same glyph dimmed, and every step carries its label
+// and time as `title` and `aria-label`, so hover and screen readers both say the word.
+const RECEIPT_EMOJI = { Seen: "\u{1F440}", Working: "\u{1F6E0}️", Done: "✅" };
+
+function receiptTime(at) {
+  const date = new Date(String(at));
+  return Number.isNaN(date.getTime())
+    ? String(at)
+    : date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function receiptStepHtml(label, at) {
+  const ticked = Boolean(at);
+  const text = ticked ? label + " " + receiptTime(at) : label + ": not yet";
+  return (
+    '<span class="receipt-step' +
+    (ticked ? " is-done" : "") +
+    '" role="img" aria-label="' +
+    escapeHtml(text) +
+    '" title="' +
+    escapeHtml(text) +
+    '">' +
+    RECEIPT_EMOJI[label] +
+    "</span>"
+  );
+}
+
+// Every branch must be true where it is shown: `waiting` is no poll at all, `listening` is a poll
+// that will take the note within milliseconds, and `working` or an external listener is an agent
+// whose next poll will take it.
+function receiptNoteText() {
+  if (agentPresence === "waiting") return "No agent is listening";
+  if (agentPresence === "listening") return "Delivering";
+  return "Agent is busy; delivered on its next poll";
+}
+
+// A transcript entry from before receipts existed (`receipt: "none"`, marked by the server once at
+// load) gets no row: nothing was ever observed about it, and an empty row would read as "never seen".
+function hasReceipt(entry) {
+  return Boolean(entry) && entry.receipt !== "none";
+}
+
+function receiptHtml(entry) {
+  if (!hasReceipt(entry)) return "";
+  return (
+    '<div class="receipt">' +
+    receiptStepHtml("Seen", entry.delivered_at) +
+    receiptStepHtml("Working", entry.working_at) +
+    receiptStepHtml("Done", entry.done_at) +
+    (entry.delivered_at ? "" : '<span class="receipt-note">' + escapeHtml(receiptNoteText()) + "</span>") +
+    "</div>"
+  );
+}
+
+// Only the pre-Seen line names the live presence, so a presence change rewrites that line alone.
+// Rebuilding the bubble would also rebuild its thumbnails and undo an "Image expired" placeholder.
+function refreshUnseenReceipts() {
+  for (const note of chatLog.querySelectorAll(".receipt-note")) note.textContent = receiptNoteText();
 }
 
 function addChat(entry, shouldScroll = true) {
@@ -997,6 +1141,7 @@ function setAgentPresence(state) {
   agentPresence = state === "listening" || state === "external" || state === "working" ? state : "waiting";
   updateSendState();
   renderSheetSummary();
+  refreshUnseenReceipts();
   if (presenceBanner) presenceBanner.hidden = ended || agentPresence !== "waiting";
 
   // A supervisor-owned process-only listener is busy on the agent's behalf. It must not make the
@@ -1060,6 +1205,7 @@ function setReviewState(state) {
 }
 
 function hasUnsentDraft() {
+  if (editingPromptId) return true;
   return Boolean(lastReviewState && lastReviewState.card && String(lastReviewState.card.text || "").trim());
 }
 
@@ -1108,7 +1254,7 @@ function renderRetiredDraft(text, stored = true) {
   const el = document.createElement("div");
   el.className = "bubble note";
   el.innerHTML =
-    "<small>Unsent annotation</small><div>The element this note was attached to is no longer in the artifact, so Lavish could not reopen the card. Your text is kept here:</div>" +
+    "<small>Unsent annotation</small><div>The artifact removed or replaced what this note was attached to, so Lavish could not keep it open. Your text is kept here:</div>" +
     '<div class="note-draft">' +
     escapeHtml(text) +
     "</div>" +
@@ -1227,6 +1373,7 @@ function renderSheetSummary() {
   panelSummary.textContent = summary.text;
   panelSummary.classList.toggle("is-accent", summary.accent);
   panelSummary.classList.toggle("is-unread", summary.unread);
+  renderSidebarToggle();
 }
 
 // A brief pulse on the dock when something the user should notice lands while the sheet is
@@ -1240,7 +1387,7 @@ function pulseSheetDock() {
 }
 
 function noteAgentReply(text) {
-  if (!isMobileSheet() || sheetOpen) return;
+  if (!isConversationHidden()) return;
   unreadAgentReply = String(text || "");
   renderSheetSummary();
   pulseSheetDock();
@@ -1324,7 +1471,11 @@ if (sheetMedia && typeof sheetMedia.addEventListener === "function") {
         // Storage refusal only prevents persistence; the in-memory state is already reset.
       }
     }
+    // A reply previewed while one layout hid the conversation is no longer owed once the other
+    // layout shows it.
+    if (!isConversationHidden()) unreadAgentReply = "";
     applySheetState();
+    applyPanelCollapsed();
   });
 }
 if (window.visualViewport && typeof window.visualViewport.addEventListener === "function") {
@@ -1334,20 +1485,230 @@ if (window.visualViewport && typeof window.visualViewport.addEventListener === "
 window.addEventListener("resize", syncVisualViewport);
 syncVisualViewport();
 
+// ---- Desktop conversation panel collapse ----
+// Above the phone breakpoint the conversation is a fixed side column; the bar's sidebar toggle
+// hides it so the artifact gets the full width. The choice is a per-viewer preference rather than
+// per-review state, so it lives in localStorage under one key for every session. chrome.css only
+// honours `panel-collapsed` outside the phone breakpoint, and this controller never sets it there,
+// so a stored preference cannot hide the phone dock.
+const panelCollapsedStorageKey = "lavish-axi:panel-collapsed";
+let panelCollapsed = readPanelCollapsed();
+
+function readPanelCollapsed() {
+  try {
+    return localStorage.getItem(panelCollapsedStorageKey) === "1";
+  } catch {
+    return false;
+  }
+}
+
+// Whether the conversation is out of sight right now, in whichever layout is active.
+function isConversationHidden() {
+  return isMobileSheet() ? !sheetOpen : panelCollapsed;
+}
+
+function revealConversation() {
+  if (isMobileSheet()) setSheetOpen(true);
+  else if (panelCollapsed) setPanelCollapsed(false);
+}
+
+function setPanelCollapsed(collapsed) {
+  panelCollapsed = Boolean(collapsed);
+  try {
+    if (panelCollapsed) localStorage.setItem(panelCollapsedStorageKey, "1");
+    else localStorage.removeItem(panelCollapsedStorageKey);
+  } catch {
+    // Storage refused only means the preference does not survive a reload.
+  }
+  if (!panelCollapsed) unreadAgentReply = "";
+  applyPanelCollapsed();
+  if (!panelCollapsed && !isMobileSheet()) scrollPanelToBottom();
+}
+
+function applyPanelCollapsed() {
+  const collapsed = panelCollapsed && !isMobileSheet();
+  document.body.classList.toggle("panel-collapsed", collapsed);
+  // Focus inside a panel that just went display:none would be lost to the document body.
+  const activeElement = document.activeElement;
+  if (collapsed && activeElement && panel.contains(activeElement)) sidebarToggle.focus();
+  sidebarToggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
+  renderSidebarToggle();
+}
+
+// While collapsed the toggle stands in for the panel: it counts queued notes (the thing still to
+// send) or, failing that, marks an agent reply that arrived out of sight.
+function renderSidebarToggle() {
+  const collapsed = panelCollapsed && !isMobileSheet();
+  const count = collapsed ? queued.length : 0;
+  const unread = collapsed && count === 0 && Boolean(unreadAgentReply);
+  sidebarToggleCount.textContent = count > 0 ? String(count) : "";
+  sidebarToggleCount.hidden = count === 0;
+  sidebarToggle.classList.toggle("is-unread", unread);
+  let label = collapsed ? "Show conversation" : "Hide conversation";
+  if (count > 0) label += count === 1 ? " (1 queued)" : " (" + count + " queued)";
+  else if (unread) label += " (new reply)";
+  sidebarToggle.setAttribute("aria-label", label);
+  sidebarToggle.title = label;
+}
+
+sidebarToggle.addEventListener("click", () => setPanelCollapsed(!panelCollapsed));
+
 function scrollElementIntoView(el) {
   el.scrollIntoView({ block: "nearest", inline: "nearest" });
 }
+
+function isPromptEditable(prompt) {
+  return Boolean(prompt) && !terminalSubmission && !isPromptSending(prompt);
+}
+
+function editQueuedPrompt(index, { reveal = true } = {}) {
+  const prompt = queued[index];
+  if (ended || !isPromptEditable(prompt)) return;
+  const id = promptIdentity(prompt);
+  if (!id) return;
+  if (id === editingPromptId) {
+    // Collapsing keeps the open edit, so asking for it again brings it back into view.
+    if (isConversationHidden()) {
+      editFocusPending = true;
+      revealConversation();
+      render();
+    }
+    return;
+  }
+  // Moving to another note keeps what was typed into the first, the way leaving a field does.
+  commitQueuedEdit();
+  editingPromptId = id;
+  editingDraft = String(prompt.prompt || "");
+  editFocusPending = true;
+  revealConversation();
+  render();
+  if (reveal && prompt.selector) postToFrame({ type: "lavish:revealElement", selector: String(prompt.selector) });
+}
+
+function endQueuedEdit() {
+  editingPromptId = "";
+  editingDraft = "";
+}
+
+// Writes the open edit into its note without rendering. Returns whether the queue changed. A note
+// cleared of words and images is removed, as if its remove control had been used.
+function commitQueuedEdit() {
+  if (!editingPromptId) return false;
+  const index = queued.findIndex((prompt) => promptIdentity(prompt) === editingPromptId);
+  const text = editingDraft.trim();
+  endQueuedEdit();
+  const prompt = queued[index];
+  if (!isPromptEditable(prompt)) return false;
+  if (!text && !attachmentCount(prompt)) {
+    queued.splice(index, 1);
+    afterQueuedPromptRemoved();
+  } else {
+    // In place, not replaced: the send bookkeeping tracks notes by object identity.
+    prompt.prompt = text;
+    persistQueuedPrompts();
+  }
+  return true;
+}
+
+function saveQueuedEdit() {
+  commitQueuedEdit();
+  render();
+}
+
+function cancelQueuedEdit() {
+  endQueuedEdit();
+  render();
+}
+
+// A click on an element the artifact knows carries a queued note. The artifact names only the
+// selector, so the most a forged message can do is open one of the user's own notes for editing.
+function editQueuedAnchor(selector) {
+  if (!selector) return;
+  for (let index = queued.length - 1; index >= 0; index--) {
+    if (isElementAnchoredPrompt(queued[index]) && queuedAnchorSelectorsOf(queued[index]).includes(selector)) {
+      if (isPromptEditable(queued[index])) {
+        editQueuedPrompt(index, { reveal: false });
+        return;
+      }
+      break;
+    }
+  }
+  // The note is already on its way, or gone: the click still deserves the card it would have had.
+  postToFrame({ type: "lavish:annotateElement", selector });
+}
+
+// Notes that point at a whole element, cell, or diagram node, which a later click on that same
+// target can find again. A text selection's note is about the words, not the element around them.
+function isElementAnchoredPrompt(prompt) {
+  const kind = promptAnchor(prompt)?.kind;
+  return Boolean(prompt.selector) && (kind === "element" || kind === "cell" || kind === "node");
+}
+
+// A diagram node is one target however deep the click lands, so its note answers to the node's
+// own selector as well as the clicked element's. Other notes name only the exact element.
+function queuedAnchorSelectorsOf(prompt) {
+  const target = prompt.target && typeof prompt.target === "object" ? prompt.target : null;
+  const whole = target?.type === "mermaid-node" ? String(target.selector || "") : "";
+  return whole ? [String(prompt.selector), whole] : [String(prompt.selector)];
+}
+
+// Tells the artifact which element selectors carry a queued note. Only selectors cross into the
+// frame: the artifact is agent-authored, and the note text stays in the chrome. Each selector is
+// listed where its newest note sits, oldest first, so the artifact can prefer an element's newest note.
+function postQueuedAnchors(force = false) {
+  const anchored = queued.filter((prompt) => isElementAnchoredPrompt(prompt)).flatMap(queuedAnchorSelectorsOf);
+  const selectors = [...new Set(anchored.reverse())].reverse();
+  const signature = JSON.stringify(selectors);
+  if (!force && signature === postedQueuedAnchors) return;
+  postedQueuedAnchors = signature;
+  postToFrame({ type: "lavish:queuedAnchors", selectors });
+}
+
+queuedLog.addEventListener("click", (event) => {
+  const target = /** @type {Element | null} */ (event.target);
+  if (!target || typeof target.closest !== "function") return;
+  // The remove control owns its own click, and an editor's textarea is for typing.
+  if (target.closest(".queued-remove") || target.closest(".queued-edit-input")) return;
+  if (target.closest(".queued-edit-save")) return saveQueuedEdit();
+  if (target.closest(".queued-edit-cancel")) return cancelQueuedEdit();
+  const bubble = /** @type {HTMLElement | null} */ (target.closest(".queued-edit") || target.closest(".bubble.queued"));
+  if (bubble) editQueuedPrompt(Number(bubble.dataset.index));
+});
+queuedLog.addEventListener("input", (event) => {
+  const target = /** @type {HTMLTextAreaElement | null} */ (event.target);
+  if (target && typeof target.closest === "function" && target.closest(".queued-edit-input")) {
+    editingDraft = String(target.value || "");
+  }
+});
+queuedLog.addEventListener("keydown", (event) => {
+  const target = /** @type {Element | null} */ (event.target);
+  if (!target || typeof target.closest !== "function" || !target.closest(".queued-edit-input")) return;
+  // The annotation card's keys: Enter keeps the words, Shift+Enter breaks the line.
+  if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
+    event.preventDefault();
+    event.stopPropagation();
+    saveQueuedEdit();
+  } else if (event.key === "Escape" && !event.isComposing && event.keyCode !== 229) {
+    event.preventDefault();
+    event.stopPropagation();
+    cancelQueuedEdit();
+  }
+});
 
 function removeQueuedPrompt(index, event) {
   if (event) event.stopPropagation();
   if (terminalSubmission || isPromptSending(queued[index])) return;
   queued.splice(index, 1);
+  afterQueuedPromptRemoved();
+  render();
+}
+
+function afterQueuedPromptRemoved() {
   persistQueuedPrompts();
   if (!queued.length) {
     clearSendAcknowledgementWarning();
     if (sendFailureOwner?.kind !== "preparation") clearPersistentSendFailure();
   }
-  render();
 }
 
 function promptQueueKey(prompt) {
@@ -1382,6 +1743,13 @@ function enqueuePrompt(rawPrompt, /** @type {FeedbackPreparation | null} */ prep
   if (queueKey) {
     const index = queued.findIndex((item) => promptQueueKey(item) === queueKey);
     if (index !== -1) {
+      // The replacement is the artifact's newer answer. Words typed against the old answer never
+      // move onto it; they are handed back to the reviewer instead.
+      if (editingPromptId && promptIdentity(queued[index]) === editingPromptId) {
+        const draft = editingDraft.trim();
+        endQueuedEdit();
+        if (draft !== String(queued[index].prompt || "").trim()) keepRetiredDraft(draft);
+      }
       queued[index] = prompt;
     } else {
       queued.push(prompt);
@@ -1660,6 +2028,8 @@ function sendQueued(endAfter) {
     return;
   }
   closeMenus();
+  // Send delivers what the panel shows, so an open edit is kept rather than sent stale.
+  if (commitQueuedEdit()) render();
 
   // A pending or failed chip holds back only the COMPOSER message (and an
   // explicit end, which would strand the chips) - queued annotation prompts
@@ -1689,7 +2059,10 @@ function sendQueued(endAfter) {
   const shouldEnd = Boolean(endAfter && !chipsBlocked);
   const preparations = shouldEnd ? [...feedbackPreparations] : [];
   if (!queued.length && preparations.length === 0) {
-    if (!chipsBlocked && !sendFailureOwner) showSendHint();
+    if (!chipsBlocked && !sendFailureOwner) {
+      if (endAfter) showSendHint(EMPTY_END_HINT);
+      else showSendHint(DEFAULT_SEND_HINT, EMPTY_SEND_HINT_HOLD_MS);
+    }
     return;
   }
   if (!sendFailureOwner) hideSendHint(true);
@@ -1739,7 +2112,7 @@ function completeTerminalPreparation(terminal, results) {
   clearPreparationFailure("terminal");
   if (!terminal.prompts.length) {
     releaseTerminalSubmission(terminal);
-    if (!sendFailureOwner) showSendHint();
+    if (!sendFailureOwner) showSendHint(EMPTY_END_HINT);
     return;
   }
   // Only make the reservation durable once every preparation has joined the exact
@@ -3124,6 +3497,9 @@ async function replaceArtifactFrame({ recoveryRetry = false } = {}) {
       previousToken &&
       artifactSpokeToken !== previousToken
     ) {
+      // A first load that gets no fresh token falls back to the one embedded in the page, so a
+      // superseded chrome still shows the artifact behind its takeover banner.
+      if (!frame.src) frame.src = artifactFrameSrcForLoad({ revision: artifactLoadRevision, token: previousToken });
       armArtifactAvailabilityProbe(previousToken);
     }
     return false;
@@ -3192,7 +3568,7 @@ async function replaceArtifactFrame({ recoveryRetry = false } = {}) {
           if (!artifactLoadToken) {
             setLayoutGateFailure(
               "This review is already open in another tab.",
-              "Lavish loads an artifact in one tab at a time. Take over here to move the review into this tab, or switch back to the tab that already has it.",
+              UNSENT_OWNERSHIP_COPY,
               "Take over here",
             );
           }
@@ -3222,6 +3598,7 @@ async function replaceArtifactFrame({ recoveryRetry = false } = {}) {
   artifactLoadRevision = revision;
   artifactLoadToken = token;
   artifactSpokeToken = "";
+  annotationDefaultReceived = false;
   inlineWhiteboardChannels.clear();
   setHandoffSuperseded(false);
   startLayoutGateCycle();
@@ -3295,11 +3672,32 @@ function postToWhiteboard(index, placement, message) {
   else postToInlineWhiteboard(index, message);
 }
 
-async function fetchMermaidSources() {
+async function fetchMermaidSourcesData() {
   const response = await fetch("/api/" + key + "/mermaid-sources");
   if (!response.ok) throw new Error("could not read the artifact's Mermaid sources");
   const data = await response.json();
-  return Array.isArray(data.sources) ? data.sources : [];
+  return {
+    sources: Array.isArray(data.sources) ? data.sources : [],
+    librariesVersion: typeof data.libraries_version === "string" ? data.libraries_version : "",
+  };
+}
+
+async function fetchMermaidSources() {
+  return (await fetchMermaidSourcesData()).sources;
+}
+
+// Fetched per init so a frame converts with the libraries its source hash was
+// computed from; a failed fetch resolves null and the frame converts without
+// libraries.
+function fetchWhiteboardLibraries() {
+  return fetch("/api/whiteboard-libraries")
+    .then((response) => (response.ok ? response.json() : null))
+    .then((data) =>
+      Array.isArray(data?.libraries)
+        ? { libraries: data.libraries, version: typeof data.version === "string" ? data.version : "" }
+        : null,
+    )
+    .catch(() => null);
 }
 
 async function authenticateWhiteboardChannel(token) {
@@ -3328,11 +3726,17 @@ function whiteboardRecord(index) {
 
 async function handleWhiteboardReady(index, mode, isCurrent) {
   try {
-    const sources = await fetchMermaidSources();
+    const librariesRequest = fetchWhiteboardLibraries();
+    const { sources, librariesVersion } = await fetchMermaidSourcesData();
     const source = sources.find((item) => item.index === index);
     if (!source) throw new Error("this diagram's Mermaid source was not found in the artifact file");
     const savedResponse = await fetch("/api/" + key + "/whiteboard/" + index);
     const saved = savedResponse.ok ? (await savedResponse.json()).whiteboard : null;
+    const librariesData = await librariesRequest;
+    // A library file that changed between the two requests leaves the frame
+    // with libraries that do not match this source hash: treat that like a
+    // failed fetch, so the conversion's autosave is held.
+    const librariesMatch = Boolean(librariesData) && (!librariesVersion || librariesData.version === librariesVersion);
     const record = whiteboardRecord(index);
     record.source = String(source.source || "");
     record.sourceHash = String(source.hash || "");
@@ -3345,6 +3749,8 @@ async function handleWhiteboardReady(index, mode, isCurrent) {
       source: record.source,
       sourceHash: record.sourceHash,
       saved,
+      libraries: librariesData ? librariesData.libraries : [],
+      librariesUnavailable: !librariesMatch,
       theme: whiteboardTheme(),
     });
     return true;
@@ -3753,9 +4159,6 @@ window.addEventListener("message", (event) => {
 
 function loadFrame() {
   if (artifactSrc) {
-    if (artifactLoadToken) {
-      frame.src = artifactFrameSrcForLoad({ revision: artifactLoadRevision, token: artifactLoadToken });
-    }
     replaceArtifactFrame().catch(() => {});
   }
 }
@@ -3886,6 +4289,50 @@ async function reloadChromeForOutdatedBanner() {
   }
 }
 
+// ---- Tab title and icon from the artifact ----
+// The server stamps the tab from the artifact's <head> once, when the chrome is served. A page that
+// changes after that (a live dashboard) can ask the chrome to follow it with
+// window.lavish.setDocumentMeta. The page is untrusted, so the chrome clamps the title and takes
+// only a bounded SVG data: icon, which cannot run script or fetch anything as a tab icon.
+const DOCUMENT_TITLE_MAX_CHARS = 120;
+const DOCUMENT_ICON_MAX_CHARS = 8192;
+const DOCUMENT_ICON_RE = /^data:image\/svg\+xml[;,]/i;
+const loadTimeTitle = document.title;
+const loadTimeIconLink = document.querySelector?.('link[rel~="icon"]');
+const loadTimeIconHref = loadTimeIconLink ? loadTimeIconLink.getAttribute("href") : null;
+
+function applyDocumentMeta(msg) {
+  if (msg.title === null) document.title = loadTimeTitle;
+  else if (typeof msg.title === "string") {
+    const title = msg.title
+      .replace(/\p{Cc}+/gu, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, DOCUMENT_TITLE_MAX_CHARS)
+      .trim();
+    document.title = title ? title + " · Lavish" : loadTimeTitle;
+  }
+  if (msg.icon === null) setDocumentIcon(loadTimeIconHref);
+  else if (
+    typeof msg.icon === "string" &&
+    msg.icon.length <= DOCUMENT_ICON_MAX_CHARS &&
+    DOCUMENT_ICON_RE.test(msg.icon)
+  ) {
+    setDocumentIcon(msg.icon);
+  }
+}
+
+function setDocumentIcon(href) {
+  // Replace the element rather than edit its href: some browsers keep showing the old icon
+  // otherwise.
+  const old = document.querySelector('link[rel~="icon"]');
+  const link = document.createElement("link");
+  link.setAttribute("rel", "icon");
+  if (href) link.setAttribute("href", href);
+  if (old) old.replaceWith(link);
+  else document.head.appendChild(link);
+}
+
 window.addEventListener("message", (event) => {
   if (event.source !== frame.contentWindow) return;
 
@@ -3934,6 +4381,13 @@ window.addEventListener("message", (event) => {
     return;
   }
   // The artifact spoke, so it rendered and ran its SDK - there is nothing fatal to probe for.
+  if (msg.type === "lavish:annotationMode" && typeof msg.enabled === "boolean" && !annotationDefaultReceived) {
+    annotationDefaultReceived = true;
+    if (!annotationOverridden && !ended && !terminalSubmission) annotation = msg.enabled;
+    annotationSwitch.setAttribute("aria-pressed", String(annotation && !ended));
+    // Reconcile even if frame load replayed the old mode before this report arrived.
+    postToFrame({ type: "lavish:setAnnotationMode", enabled: annotation && !ended });
+  }
   if (msg.type === "lavish:queuePrompt") {
     enqueuePrompt(msg.prompt);
     // Queued from inside the artifact, where the closed dock is the only sign it landed.
@@ -3942,6 +4396,7 @@ window.addEventListener("message", (event) => {
   if (msg.type === "lavish:snapshot") {
     completeSnapshotRequest(msg.snapshot_request_id, msg.snapshot || "");
   }
+  if (msg.type === "lavish:documentMeta") applyDocumentMeta(msg);
   if (msg.type === "lavish:scroll") {
     lastScroll = { x: Number(msg.x) || 0, y: Number(msg.y) || 0 };
   }
@@ -3965,6 +4420,7 @@ window.addEventListener("message", (event) => {
   if (msg.type === "lavish:endSession") endSession();
   if (msg.type === "lavish:revisions") applyRevisionMessage(msg);
   if (msg.type === "lavish:toggleAnnotationMode") toggleAnnotationMode();
+  if (msg.type === "lavish:editQueuedAnchor") editQueuedAnchor(String(msg.selector || ""));
 });
 
 // The sandboxed artifact iframe can't reach the loopback server (opaque origin),
@@ -4096,6 +4552,7 @@ loadFrame();
 
 function toggleAnnotationMode() {
   if (ended || terminalSubmission) return;
+  annotationOverridden = true;
   annotation = !annotation;
   annotationSwitch.setAttribute("aria-pressed", String(annotation));
   postToFrame({ type: "lavish:setAnnotationMode", enabled: annotation });
@@ -4200,7 +4657,7 @@ chatAttachments.addEventListener("click", (event) => {
   if (retry) chatAttachmentController.retry(String(retry.dataset.chatAttachmentRetry || ""));
 });
 chatInput.addEventListener("keydown", (event) => {
-  if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+  if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
     event.preventDefault();
     sendQueued(false);
   }
@@ -4293,6 +4750,7 @@ frame.addEventListener("load", () => {
   // Replay the pre-reload scroll position so hot reloads don't jump the artifact to the top.
   postToFrame({ type: "lavish:restoreScroll", x: lastScroll.x, y: lastScroll.y });
   if (lastReviewState) postToFrame({ type: "lavish:restoreReviewState", state: lastReviewState });
+  postQueuedAnchors(true);
   if (overlayIndex !== null) {
     inlineWhiteboardChannels.delete(overlayIndex);
     postToFrame({ type: "lavish:suspendWhiteboard", diagramIndex: overlayIndex });
@@ -4372,6 +4830,7 @@ events.set("ended", () => markSessionEnded());
 connectLiveEvents();
 
 applySheetState();
+applyPanelCollapsed();
 settleQueuedFromTranscript(initialChat, false);
 render();
 setChromeOutdated(false);
