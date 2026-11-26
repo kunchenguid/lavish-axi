@@ -74,7 +74,14 @@ function cliEnv(dir, port, host) {
     LAVISH_AXI_NO_OPEN: "1",
     LAVISH_AXI_TELEMETRY: "0",
     LAVISH_AXI_IDLE_TIMEOUT_MS: "60000",
+    LAVISH_AXI_DISCOVER_ALL_INTERFACES: undefined,
   };
+}
+
+// The opt-in sweep that also dials every other local interface address. These tests stand in for a
+// 0.1.77-or-older server pinned to a Tailscale or LAN address alone, which only the sweep can find.
+function sweepEnv(dir, port, host) {
+  return { ...cliEnv(dir, port, host), LAVISH_AXI_DISCOVER_ALL_INTERFACES: "1" };
 }
 
 // The CLI prints its TOON result to stdout; these tests assert on server and state effects instead.
@@ -510,7 +517,7 @@ test(
         idleTimeoutMs: null,
       });
       try {
-        await withEnv(cliEnv(dir, port, undefined), () => runCli(["open", artifact, "--no-open"]));
+        await withEnv(sweepEnv(dir, port, undefined), () => runCli(["open", artifact, "--no-open"]));
         assert.equal(await reachable("127.0.0.1", port), false, "a duplicate server started on loopback");
         assert.equal(await isResolved(pinned.done), false);
         assert.deepEqual(await stateSessions(dir), [artifact]);
@@ -688,7 +695,9 @@ test("a second daemon without process_id is still retired", { timeout: 20_000 },
       assert.equal(keptHealth.process_id, undefined);
       assert.equal(duplicateHealth.process_id, undefined);
       assert.equal(keptHealth.state_id, duplicateHealth.state_id);
-      await withEnv(cliEnv(dir, port, undefined), () => runCli(["open", artifact, "--no-open"]));
+      // The process_id-less duplicate is only reachable at another local address, so this
+      // uses the opt-in interface sweep. Default discovery stays loopback-only.
+      await withEnv(sweepEnv(dir, port, undefined), () => runCli(["open", artifact, "--no-open"]));
       assert.ok(await waitFor(() => isResolved(duplicate.done)), "the duplicate daemon was not retired");
       assert.equal(await isResolved(kept.done), false, "the chosen daemon was retired");
       assert.deepEqual(await stateSessions(dir), [artifact]);
@@ -735,7 +744,7 @@ test(
         idleTimeoutMs: null,
       });
       try {
-        await withEnv(cliEnv(dir, port, undefined), () => runCli(["open", artifact, "--no-open"]));
+        await withEnv(sweepEnv(dir, port, undefined), () => runCli(["open", artifact, "--no-open"]));
         assert.equal(await isResolved(otherInstall.done), false, "another installation's server was stopped");
         assert.equal(await isResolved(kept.done), false);
       } finally {
@@ -762,7 +771,7 @@ test(
         assert.equal(keptHealth.state_id, duplicateHealth.state_id);
         assert.notEqual(keptHealth.process_id, duplicateHealth.process_id);
         const { key } = await openSession(otherHost, port, artifact);
-        await withEnv(cliEnv(dir, port, undefined), () => runCli(["open", artifact, "--no-open"]));
+        await withEnv(sweepEnv(dir, port, undefined), () => runCli(["open", artifact, "--no-open"]));
         assert.ok(await waitFor(() => isResolved(duplicate.done)), "the duplicate daemon was not retired");
         const survivor = await health(otherHost, port);
         assert.ok(survivor.hosts.includes("127.0.0.1") && survivor.hosts.includes(otherHost), survivor.hosts.join());
@@ -838,7 +847,7 @@ test(
       });
       await new Promise((resolve) => old.listen({ host: otherHost, port }, () => resolve(undefined)));
       try {
-        await withEnv(cliEnv(dir, port, undefined), () => runCli(["open", artifact, "--no-open"]));
+        await withEnv(sweepEnv(dir, port, undefined), () => runCli(["open", artifact, "--no-open"]));
         assert.equal(shutdowns, 0, "the old server at another address was asked to shut down");
         const started = await health("127.0.0.1", port);
         assert.equal(started.version, VERSION);
@@ -988,7 +997,7 @@ test(
         idleTimeoutMs: null,
       });
       try {
-        await withEnv(cliEnv(dir, port, otherHost), () => runCli(["open", artifact, "--no-open"]));
+        await withEnv(sweepEnv(dir, port, otherHost), () => runCli(["open", artifact, "--no-open"]));
         assert.equal(await isResolved(oldLoopback.done), true, "the old loopback daemon survived the upgrade");
         assert.equal(await isResolved(oldPinned.done), true, "the old pinned daemon survived the upgrade");
         const upgraded = await health(otherHost, port);
@@ -1315,6 +1324,37 @@ createServer((socket) => socket.destroy()).listen({ host, port: Number(port) }, 
   });
 });
 
+test("discovery dials no other local address unless the interface sweep is enabled", { timeout: 20_000 }, async (t) => {
+  const otherHost = otherLocalIpv4();
+  if (!otherHost) {
+    t.skip("host has no non-loopback IPv4 address");
+    return;
+  }
+  await withTempDir(async (dir) => {
+    const port = await freePort(otherHost);
+    let connections = 0;
+    const recorder = createServer((socket) => {
+      connections += 1;
+      socket.destroy();
+    });
+    await new Promise((resolve, reject) => {
+      recorder.once("error", reject);
+      recorder.listen({ host: otherHost, port }, () => resolve(undefined));
+    });
+    try {
+      await withEnv(cliEnv(dir, port, undefined), () => runCli(["stop"]));
+      assert.equal(connections, 0, "default discovery dialed a non-loopback interface address");
+
+      await withEnv({ ...cliEnv(dir, port, undefined), LAVISH_AXI_DISCOVER_ALL_INTERFACES: "1" }, () =>
+        runCli(["stop"]),
+      );
+      assert.ok(connections > 0, "the opt-in sweep did not dial the other local address");
+    } finally {
+      await closeRaw(recorder);
+    }
+  });
+});
+
 test("discovery does not keep the CLI alive after a local address drops connections", { timeout: 30_000 }, async () => {
   await withTempDir(async (dir) => {
     // A Tailscale IPv6 address drops connections to itself, so a probe of it never connects. The
@@ -1339,6 +1379,7 @@ os.networkInterfaces = () => ({ ...networkInterfaces(), blackhole: [{ address: "
           LAVISH_AXI_STATE_DIR: dir,
           LAVISH_AXI_TELEMETRY: "0",
           LAVISH_AXI_HOST: "127.0.0.1",
+          LAVISH_AXI_DISCOVER_ALL_INTERFACES: "1",
         },
         stdio: ["ignore", "pipe", "pipe"],
       },
