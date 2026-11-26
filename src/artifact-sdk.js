@@ -1249,6 +1249,8 @@ export function createArtifactSdk(
   function highlightTextRange(range) {
     clearTextHighlight();
     const root = ensureShadow();
+    // Under an open card, so a highlight redrawn while the card is open never paints over it.
+    const card = root.querySelector(".lavish-annotation-card");
     for (const rect of [...range.getClientRects()]) {
       if (rect.width <= 0 || rect.height <= 0) continue;
       const mark = document.createElement("div");
@@ -1257,7 +1259,7 @@ export function createArtifactSdk(
       mark.style.top = rect.top + "px";
       mark.style.width = rect.width + "px";
       mark.style.height = rect.height + "px";
-      root.appendChild(mark);
+      root.insertBefore(mark, card);
     }
   }
 
@@ -2399,13 +2401,16 @@ export function createArtifactSdk(
       '</div><div class="lavish-row"><button class="lavish-cancel" type="button">Cancel</button><button class="lavish-send" type="button">Queue</button></div>';
     root.appendChild(card);
 
-    // Clamp the card fully inside the viewport. Called again whenever its height
-    // changes (attachment chip rows are added/removed) so a grown card never pushes
-    // its Queue/Cancel buttons off the bottom of the frame (W3), and whenever the
-    // frame resizes, against a freshly measured anchor `rect`.
+    // Clamp the card fully inside the viewport, capping its height to the frame so a card
+    // taller than a short frame scrolls inside itself instead of losing its top. Called again
+    // whenever its height changes (attachment chip rows are added/removed) so a grown card never
+    // pushes its Queue/Cancel buttons off the bottom of the frame (W3), and whenever the frame
+    // resizes, against a freshly measured anchor `rect`.
+    card.style.overflowY = "auto";
     function positionCard() {
+      card.style.maxHeight = Math.max(0, window.innerHeight - 24) + "px";
       const left = Math.min(Math.max(12, rect.left), window.innerWidth - card.offsetWidth - 12);
-      const top = Math.min(Math.max(12, rect.bottom + 8), window.innerHeight - card.offsetHeight - 12);
+      const top = Math.max(12, Math.min(rect.bottom + 8, window.innerHeight - card.offsetHeight - 12));
       card.style.left = left + "px";
       card.style.top = top + "px";
     }
@@ -2417,21 +2422,24 @@ export function createArtifactSdk(
     // page under the conversation dock and the keyboard. On every resize, measure the anchor
     // again and re-clamp. When the frame got shorter and the card no longer fits below its
     // anchor, first scroll the page up by the shortfall, never past the anchor's own top, so
-    // the anchor stays in view above the card.
+    // the anchor stays in view above the card. A text selection's highlight is drawn at fixed
+    // coordinates too, so it is redrawn against the moved range.
     let viewportHeight = window.innerHeight;
     const keepCardInView = () => {
       const shrank = window.innerHeight < viewportHeight;
       viewportHeight = window.innerHeight;
       rect = measureAnchor();
+      positionCard();
       if (shrank) {
         const shortfall = rect.bottom + 8 + card.offsetHeight + 12 - window.innerHeight;
         const lift = Math.min(shortfall, rect.top - 12);
         if (lift > 0) {
           window.scrollBy({ top: lift, behavior: "instant" });
           rect = measureAnchor();
+          positionCard();
         }
       }
-      positionCard();
+      if (options.range) highlightTextRange(options.range);
     };
     window.addEventListener("resize", keepCardInView);
     releaseCardViewport = () => window.removeEventListener("resize", keepCardInView);

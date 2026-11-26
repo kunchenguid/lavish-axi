@@ -64,6 +64,13 @@ function createElement(tag) {
       element.children.push(child);
       return child;
     },
+    insertBefore(child, reference) {
+      child.parentElement = element;
+      const index = element.children.indexOf(reference);
+      if (index >= 0) element.children.splice(index, 0, child);
+      else element.children.push(child);
+      return child;
+    },
     remove() {
       const index = element.parentElement?.children.indexOf(element) ?? -1;
       if (index >= 0) element.parentElement.children.splice(index, 1);
@@ -89,12 +96,18 @@ function createElement(tag) {
     scrollIntoView() {},
     attachShadow() {
       const shadowRoot = createElement("shadow-root");
-      // A new Reveal drops the previous marker by querying the shadow root for its class, so that
-      // query answers with the markers actually appended there.
+      // A new Reveal drops the previous marker, and a redrawn text highlight its previous marks, by
+      // querying the shadow root for their class, so those queries answer with what was appended.
       shadowRoot.querySelectorAll = (selector) =>
-        selector === ".lavish-reveal-marker"
-          ? shadowRoot.children.filter((child) => child.className === "lavish-reveal-marker")
+        selector === ".lavish-reveal-marker" || selector === ".lavish-text-highlight"
+          ? shadowRoot.children.filter((child) => "." + child.className === selector)
           : [];
+      // A text highlight is drawn under the open card, found the same way.
+      const queryElement = shadowRoot.querySelector;
+      shadowRoot.querySelector = (selector) =>
+        selector === ".lavish-annotation-card"
+          ? shadowRoot.children.findLast((child) => child.className === "lavish-annotation-card") || null
+          : queryElement(selector);
       element.shadowRoot = shadowRoot;
       return shadowRoot;
     },
@@ -297,7 +310,7 @@ function bootSdk({
         endContainer: textNode,
         endOffset: text.length,
         cloneRange: () => range,
-        getClientRects: () => [],
+        getClientRects: () => [target.getBoundingClientRect()],
         getBoundingClientRect: () => target.getBoundingClientRect(),
       };
       selection = { rangeCount: 1, getRangeAt: () => range, toString: () => text };
@@ -690,6 +703,41 @@ test("a closed card stops following frame resizes", () => {
   sdk.resizeWindow(400);
 
   assert.equal(sdk.window.scrollY, 0);
+});
+
+test("a card taller than the shortened frame scrolls inside itself with its top in view", () => {
+  const sdk = bootSdk();
+  const paragraph = pageParagraph(sdk, "Low on the page", 600);
+
+  sdk.click(paragraph);
+  const card = sdk.card();
+  // A card grown by attachment rows: 300px of content, shown up to its max height.
+  Object.defineProperty(card, "offsetHeight", { get: () => Math.min(300, parseFloat(card.style.maxHeight)) });
+  sdk.resizeWindow(200);
+
+  assert.equal(card.style.overflowY, "auto");
+  assert.equal(card.style.maxHeight, "176px");
+  assert.equal(card.style.top, "12px", "the card's top, and its textarea, stay inside the frame");
+});
+
+test("a text highlight follows its range when the keyboard scrolls the page, under the card", () => {
+  const sdk = bootSdk();
+  const paragraph = pageParagraph(sdk, "Low on the page", 600);
+
+  sdk.selectText(paragraph, "Low");
+  sdk.resizeWindow(400);
+
+  const shadowChildren = sdk.document.documentElement.children.flatMap((child) => child.shadowRoot?.children || []);
+  const marks = shadowChildren.filter((child) => child.className === "lavish-text-highlight");
+  assert.equal(sdk.window.scrollY, 350);
+  assert.deepEqual(
+    marks.map((mark) => mark.style.top),
+    ["250px"],
+  );
+  assert.ok(
+    shadowChildren.indexOf(marks[0]) < shadowChildren.indexOf(sdk.card()),
+    "the highlight stays under the card",
+  );
 });
 
 // closeCard() clears the element highlight, so that highlight standing or gone is the observable proof of close.
