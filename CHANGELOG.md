@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.99](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.98...lavish-axi-v0.1.99) (2026-11-26)
+
+
+### Bug Fixes
+
+* **cli:** discover the server on loopback only unless the interface sweep is enabled ([#515](https://github.com/kunchenguid/lavish-axi/issues/515)) ([8d02fc3](https://github.com/kunchenguid/lavish-axi/commit/8d02fc36967406eb88f20240dcfcdbed3878d016))
+
 ## [0.1.98](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.97...lavish-axi-v0.1.98) (2026-11-17)
 
 
