@@ -96,6 +96,10 @@ async function createChromeHarness({
   // chrome's sheet breakpoint, with `setMobile` flipping it the way a resize would. Left off, the
   // window has no matchMedia at all, which is the desktop the other tests run against.
   mobile = false,
+  // Opt-in device model for the layout lock: what `screen`, the viewport, the pointer, the page URL,
+  // and chrome.css's media rules report. Its matchMedia answers the width queries from `innerWidth`
+  // and the pointer query from `coarse`, the way a real browser would.
+  device = null,
 } = {}) {
   const source = await readFile(sourceUrl, "utf8");
   // Seed sessionStorage before the client boots, to model a tab whose queue was
@@ -397,6 +401,7 @@ async function createChromeHarness({
   let clockNow = Date.now();
   const context = {
     AbortController,
+    URLSearchParams,
     clearTimeout: fakeClearTimeout,
     console,
     ...(fakeClock ? { Date: { now: () => clockNow, parse: Date.parse } } : {}),
@@ -520,7 +525,55 @@ async function createChromeHarness({
     },
   };
   const mediaQueries = [];
-  if (mobile) {
+  const historyReplacements = [];
+  const rootProperties = new Map();
+  const documentElement = {
+    style: {
+      zoom: "",
+      setProperty(name, value) {
+        rootProperties.set(name, value);
+      },
+      removeProperty(name) {
+        rootProperties.delete(name);
+      },
+      getPropertyValue(name) {
+        return rootProperties.get(name) ?? "";
+      },
+    },
+  };
+  if (device) {
+    context.window.screen = device.screen;
+    context.window.innerWidth = device.innerWidth;
+    context.window.innerHeight = device.innerHeight;
+    context.location.search = device.search || "";
+    context.location.pathname = "/session/abc";
+    context.location.hash = "#top";
+    context.window.history = {
+      state: { page: "review" },
+      replaceState(state, _title, url) {
+        historyReplacements.push({ state, url: String(url) });
+        const search = String(url).match(/\?[^#]*/);
+        context.location.search = search ? search[0] : "";
+      },
+    };
+    context.document.documentElement = documentElement;
+    context.document.styleSheets = device.styleSheets || [];
+    context.window.matchMedia = (query) => {
+      const width = query.match(/^\(max-width: (\d+)px\)$/);
+      const list = {
+        media: query,
+        matches: width
+          ? device.innerWidth <= Number(width[1])
+          : query === "(pointer: coarse)" && Boolean(device.coarse),
+        changeHandlers: [],
+        addEventListener(type, handler) {
+          if (type === "change") this.changeHandlers.push(handler);
+        },
+      };
+      mediaQueries.push(list);
+      return list;
+    };
+  } else if (mobile) {
     context.window.matchMedia = (query) => {
       const list = {
         media: query,
@@ -683,6 +736,15 @@ async function createChromeHarness({
     artifactBeginRequests,
     artifactLoadToken: frameLoadToken,
     mediaQueries,
+    documentElement,
+    historyReplacements,
+    // The browser resizing the layout viewport (an on-screen keyboard, a rotation), then firing
+    // the window's resize listeners.
+    resizeViewport({ innerWidth = context.window.innerWidth, innerHeight = context.window.innerHeight }) {
+      context.window.innerWidth = innerWidth;
+      context.window.innerHeight = innerHeight;
+      for (const handler of windowListeners.get("resize") || []) handler({});
+    },
     setMobile(matches) {
       for (const list of mediaQueries) {
         list.matches = matches;
@@ -9442,4 +9504,198 @@ test("a window that is not the artifact frame cannot set the tab", async () => {
     });
   }
   assert.equal(chrome.tab().title, "Plan \u00b7 Lavish");
+});
+
+// The media rules chrome.css carries, as the CSSOM exposes them. The lock rewrites `mediaText`.
+function chromeCssSheet(href = "http://lavish.test/chrome.css") {
+  const texts = [
+    "not all and (max-width: 860px)",
+    "(max-width: 320px)",
+    "(max-width: 640px)",
+    "(max-width: 860px)",
+    "(max-width: 860px) and (max-height: 520px)",
+  ];
+  return { href, cssRules: texts.map((mediaText) => ({ media: { mediaText }, cssRules: [] })) };
+}
+
+function mediaTexts(sheet) {
+  return sheet.cssRules.map((rule) => rule.media.mediaText);
+}
+
+const DESKTOP_SITE_PHONE = { screen: { width: 412, height: 915 }, innerWidth: 980, innerHeight: 2176, coarse: true };
+
+// Regression: a phone that asks for the desktop site (or an in-app browser that does it for it)
+// reports a ~980px viewport, so the width breakpoint handed it the desktop layout shrunk onto the
+// screen - a conversation column too small to read, the reviewer zooming in to use it.
+test("a touch phone reporting a desktop-width viewport gets the phone layout, zoomed to phone size", async () => {
+  const sheet = chromeCssSheet();
+  const foreign = chromeCssSheet("http://lavish.test/artifact-theme.css");
+  const chrome = await createChromeHarness({ device: { ...DESKTOP_SITE_PHONE, styleSheets: [sheet, foreign] } });
+
+  assert.deepEqual(mediaTexts(sheet), [
+    "not all and (min-width: 0px)",
+    "(max-width: 0px)",
+    "(min-width: 0px)",
+    "(min-width: 0px)",
+    "(min-width: 0px) and (max-height: 520px)",
+  ]);
+  assert.deepEqual(mediaTexts(foreign), mediaTexts(chromeCssSheet()), "only Lavish's own stylesheet is touched");
+  assert.equal(chrome.documentElement.style.zoom, "2.379");
+  // Viewport units inside the zoom are replaced by the device's own height.
+  const layoutVh = parseFloat(chrome.documentElement.style.getPropertyValue("--layout-vh"));
+  assert.ok(Math.abs(layoutVh * 2.379 - DESKTOP_SITE_PHONE.innerHeight) < 0.01, `--layout-vh is ${layoutVh}px`);
+  assert.equal(chrome.element("layoutToggleText").textContent, "Layout: Auto (phone)");
+
+  // The sheet controller follows the lock, not the viewport query.
+  assert.equal(sheetState(chrome).open, false);
+  chrome.element("panelHead").dispatch("click", {});
+  assert.equal(sheetState(chrome).open, true);
+});
+
+test("picking a layout that zooms the page resizes the sheet to the zoomed viewport", async () => {
+  const chrome = await createChromeHarness({
+    device: { ...DESKTOP_SITE_PHONE, search: "?layout=desktop", styleSheets: [chromeCssSheet()] },
+  });
+  const style = chrome.documentElement.style;
+  assert.equal(style.getPropertyValue("--vv-height"), DESKTOP_SITE_PHONE.innerHeight + "px");
+
+  chrome.element("layoutToggle").onclick();
+  assert.equal(style.zoom, "2.379");
+  const vvHeight = parseFloat(style.getPropertyValue("--vv-height"));
+  assert.ok(Math.abs(vvHeight * 2.379 - DESKTOP_SITE_PHONE.innerHeight) < 0.01, `--vv-height is ${vvHeight}px`);
+});
+
+// Regression: Android's keyboard shrinks the viewport of an upright phone (the page asks for
+// `interactive-widget=resizes-content`). Read as a rotation, it zoomed the conversation by the
+// screen's long side while the reviewer typed.
+test("an on-screen keyboard shortening the viewport keeps the phone layout zoom", async () => {
+  for (const screen of [
+    DESKTOP_SITE_PHONE.screen,
+    { ...DESKTOP_SITE_PHONE.screen, orientation: { type: "portrait-primary" } },
+  ]) {
+    const chrome = await createChromeHarness({
+      device: { ...DESKTOP_SITE_PHONE, screen, styleSheets: [chromeCssSheet()] },
+    });
+    assert.equal(chrome.documentElement.style.zoom, "2.379");
+    chrome.resizeViewport({ innerHeight: 900 });
+    assert.equal(chrome.documentElement.style.zoom, "2.379", "the keyboard did not turn the phone");
+  }
+});
+
+test("a rotated phone zooms the phone layout by the screen's long side", async () => {
+  // iOS keeps `screen.width`/`height` in portrait; `screen.orientation` says the phone turned.
+  const chrome = await createChromeHarness({
+    device: {
+      screen: { width: 390, height: 844, orientation: { type: "landscape-primary" } },
+      innerWidth: 980,
+      innerHeight: 420,
+      coarse: true,
+      styleSheets: [chromeCssSheet()],
+    },
+  });
+  assert.equal(chrome.documentElement.style.zoom, "1.161");
+});
+
+test("picking a layout from the menu drops ?layout= so the saved choice survives a reload", async () => {
+  const localStore = new Map();
+  const chrome = await createChromeHarness({
+    localStore,
+    device: { ...DESKTOP_SITE_PHONE, search: "?layout=desktop&theme=dark", styleSheets: [chromeCssSheet()] },
+  });
+  assert.deepEqual(chrome.historyReplacements, []);
+  // Desktop (from the link), then Auto, then Phone.
+  chrome.element("layoutToggle").onclick();
+  chrome.element("layoutToggle").onclick();
+  assert.deepEqual(chrome.historyReplacements, [{ state: { page: "review" }, url: "/session/abc?theme=dark#top" }]);
+  assert.equal(localStore.get("lavish-axi:layout"), "phone");
+
+  // The reloaded page has the URL the menu left behind and starts from the saved choice.
+  const reloaded = await createChromeHarness({
+    localStore,
+    device: { ...DESKTOP_SITE_PHONE, search: "?theme=dark", styleSheets: [chromeCssSheet()] },
+  });
+  assert.equal(reloaded.element("layoutToggleText").textContent, "Layout: Phone");
+});
+
+test("a board link can ask for a layout with ?layout=", async () => {
+  const phoneSheet = chromeCssSheet();
+  const phone = await createChromeHarness({
+    device: { ...DESKTOP_SITE_PHONE, search: "?layout=desktop", styleSheets: [phoneSheet] },
+  });
+  assert.ok(mediaTexts(phoneSheet).every((text) => !text.includes("(min-width: 0px)")));
+  assert.equal(phone.documentElement.style.zoom, "");
+  assert.equal(phone.documentElement.style.getPropertyValue("--layout-vh"), "");
+  assert.equal(phone.element("layoutToggleText").textContent, "Layout: Desktop");
+  phone.element("panelHead").dispatch("click", {});
+  assert.equal(sheetState(phone).open, false, "the desktop layout has no sheet");
+
+  const desktopSheet = chromeCssSheet();
+  const desktop = await createChromeHarness({
+    device: {
+      screen: { width: 1920, height: 1080 },
+      innerWidth: 1280,
+      innerHeight: 900,
+      coarse: false,
+      search: "?layout=phone",
+      styleSheets: [desktopSheet],
+    },
+  });
+  assert.equal(mediaTexts(desktopSheet)[3], "(min-width: 0px)");
+  assert.equal(mediaTexts(desktopSheet)[2], "(max-width: 0px)", "a 1280px phone layout is not a 640px one");
+  assert.equal(desktop.documentElement.style.zoom, "", "a desktop is not zoomed");
+  assert.equal(desktop.documentElement.style.getPropertyValue("--layout-vh"), "");
+  desktop.element("panelHead").dispatch("click", {});
+  assert.equal(sheetState(desktop).open, true);
+});
+
+test("a desktop and a tablet keep the width breakpoint unless asked", async () => {
+  for (const device of [
+    { screen: { width: 1920, height: 1080 }, innerWidth: 1280, innerHeight: 900, coarse: false },
+    { screen: { width: 820, height: 1180 }, innerWidth: 820, innerHeight: 1180, coarse: true },
+  ]) {
+    const sheet = chromeCssSheet();
+    const chrome = await createChromeHarness({ device: { ...device, styleSheets: [sheet] } });
+    assert.deepEqual(mediaTexts(sheet), mediaTexts(chromeCssSheet()));
+    assert.equal(chrome.documentElement.style.zoom, "");
+    assert.equal(chrome.element("layoutToggleText").textContent, "Layout: Auto");
+  }
+});
+
+test("the layout menu item cycles Auto, Phone, Desktop and is remembered on the device", async () => {
+  const sheet = chromeCssSheet();
+  const localStore = new Map();
+  const chrome = await createChromeHarness({
+    localStore,
+    device: {
+      screen: { width: 1920, height: 1080 },
+      innerWidth: 1280,
+      innerHeight: 900,
+      coarse: false,
+      styleSheets: [sheet],
+    },
+  });
+  const toggle = chrome.element("layoutToggle");
+  toggle.onclick();
+  assert.equal(localStore.get("lavish-axi:layout"), "phone");
+  assert.equal(chrome.element("layoutToggleText").textContent, "Layout: Phone");
+  assert.equal(mediaTexts(sheet)[3], "(min-width: 0px)");
+  chrome.element("panelHead").dispatch("click", {});
+  assert.equal(sheetState(chrome).open, true);
+
+  toggle.onclick();
+  assert.equal(localStore.get("lavish-axi:layout"), "desktop");
+  assert.equal(sheetState(chrome).open, false, "leaving the phone layout closes the sheet");
+  assert.ok(mediaTexts(sheet).every((text) => !text.includes("(min-width: 0px)")));
+
+  toggle.onclick();
+  assert.equal(localStore.has("lavish-axi:layout"), false);
+  assert.deepEqual(mediaTexts(sheet), mediaTexts(chromeCssSheet()), "Auto restores chrome.css as written");
+
+  // A later page on this device starts from the stored choice.
+  localStore.set("lavish-axi:layout", "phone");
+  const later = await createChromeHarness({
+    localStore,
+    device: { screen: { width: 1920, height: 1080 }, innerWidth: 1280, innerHeight: 900, coarse: false },
+  });
+  assert.equal(later.element("layoutToggleText").textContent, "Layout: Phone");
 });
