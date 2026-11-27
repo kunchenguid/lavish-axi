@@ -770,8 +770,22 @@ export async function serve({
     return defaultJsonParser(req, res, next);
   });
 
-  app.get("/", (_req, res) => {
-    res.type("html").send(createLandingHtml());
+  // The root page is a sessions index so a harness browser pane can show one running server. It is
+  // served only to a local client (isDirectoryRequest); everyone else gets the plain landing page.
+  async function openSessionsFor(req) {
+    if (!isDirectoryRequest(req)) return [];
+    return serializeSessionsIndex(await store.listSessions());
+  }
+
+  app.get("/", async (req, res) => {
+    res.set("Cache-Control", "no-store");
+    res.type("html").send(createLandingHtml(await openSessionsFor(req)));
+  });
+
+  app.get("/latest", async (req, res) => {
+    res.set("Cache-Control", "no-store");
+    const [newest] = await openSessionsFor(req);
+    res.redirect(302, newest ? `/session/${encodeURIComponent(newest.key)}` : "/");
   });
 
   app.get("/health", async (req, res) => {
@@ -2498,7 +2512,50 @@ function wantsHtml(req) {
   return accept.toLowerCase().includes("text/html");
 }
 
-function createLandingHtml() {
+const FORWARDING_HEADERS = ["forwarded", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "x-real-ip"];
+
+export function isLoopbackPeer(address) {
+  const value = String(address || "");
+  const v4 = value.startsWith("::ffff:") ? value.slice(7) : value;
+  return /^127(\.\d{1,3}){3}$/.test(v4) || value === "::1";
+}
+
+// The sessions index names files on disk, so it is served only to a local client: the TCP peer
+// (never a header) must be loopback, and any forwarding header means a reverse proxy sits in front,
+// which fails closed. Listing a key grants nothing; every mutating route keeps its own guard.
+export function isDirectoryRequest(req) {
+  if (!isLoopbackPeer(req.socket?.remoteAddress)) return false;
+  return !FORWARDING_HEADERS.some((name) => req.headers?.[name] !== undefined);
+}
+
+// Open sessions, newest first, reduced to what the index shows: never prompts, chat, or snapshots.
+export function serializeSessionsIndex(sessions) {
+  return sessions
+    .filter((session) => session.status !== "ended")
+    .sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")))
+    .map((session) => {
+      const { head, tail } = displayPathParts(session.file);
+      const parts = head.split("/").filter(Boolean);
+      const parent = parts.at(-1);
+      return {
+        key: session.key,
+        name: parent ? `${parent}/${tail}` : tail,
+        file: head + tail,
+        queued: Number(session.pending_prompts) || 0,
+      };
+    });
+}
+
+export function createLandingHtml(sessions = []) {
+  if (sessions.length) {
+    const items = sessions
+      .map(
+        (session) =>
+          `<li><a href="/session/${escapeHtml(session.key)}"><span class="name">${escapeHtml(session.name)}</span><span class="path">${escapeHtml(session.file)}</span>${session.queued ? `<b>${session.queued} queued</b>` : ""}</a></li>`,
+      )
+      .join("");
+    return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="5"><title>Lavish Editor</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f7f4ef;color:#25221f;font:16px/1.5 system-ui,sans-serif}.card{width:min(640px,calc(100% - 40px));padding:32px;border:1px solid #d9d0c5;border-radius:16px;background:#fffdf9;box-shadow:0 12px 40px #25221f18}h1{margin:0 0 4px;font-size:26px}p{margin:0 0 16px;color:#6b635a}ul{list-style:none;margin:0;padding:0}li+li{margin-top:8px}a{display:block;padding:10px 14px;border:1px solid #d9d0c5;border-radius:10px;color:inherit;text-decoration:none}a:hover{background:#f0ebe4}.name{display:block;font-weight:700}.path{display:block;font-size:13px;color:#6b635a;overflow-wrap:anywhere}b{font-size:12px;color:#9e4c00;font-weight:400}</style></head><body><main class="card"><h1>Lavish Editor is running</h1><p>Open review sessions, newest first</p><ul>${items}</ul></main></body></html>`;
+  }
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Lavish Editor</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f7f4ef;color:#25221f;font:16px/1.5 system-ui,sans-serif}.card{width:min(560px,calc(100% - 40px));padding:32px;border:1px solid #d9d0c5;border-radius:16px;background:#fffdf9;box-shadow:0 12px 40px #25221f18}h1{margin:0 0 12px;font-size:26px}p{margin:0}</style></head><body><main class="card"><h1>Lavish Editor is running</h1><p>Open the review session URL printed by your agent.</p></main></body></html>`;
 }
 
