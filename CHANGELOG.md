@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.100](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.99...lavish-axi-v0.1.100) (2026-11-27)
+
+
+### Features
+
+* **server:** support public session URL origins ([#514](https://github.com/kunchenguid/lavish-axi/issues/514)) ([0159b44](https://github.com/kunchenguid/lavish-axi/commit/0159b443b7f999ac09f0aa2605e3a1d9ced81e6e))
+
 ## [0.1.99](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.98...lavish-axi-v0.1.99) (2026-11-26)
 
 
