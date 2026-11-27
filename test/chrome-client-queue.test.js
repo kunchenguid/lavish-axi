@@ -450,6 +450,12 @@ async function createChromeHarness({
       addEventListener(type, handler) {
         this.protocolListeners.set(type, handler);
       }
+
+      close() {
+        if (this.readyState === 3) return;
+        this.readyState = 3;
+        this.protocolListeners.get("close")?.({});
+      }
     },
     document: {
       // The tab as the server served it: the artifact's title and its icon link.
@@ -731,6 +737,31 @@ test("chrome reconnects its live WebSocket and syncs missed chat", async () => {
     data: JSON.stringify({ chat: [{ role: "agent", text: "Missed while disconnected" }] }),
   });
   assert.match(chrome.element("chatLog").lastAppendedChild.innerHTML, /Missed while disconnected/);
+});
+
+test("an ended chrome closes its live WebSocket and never reconnects", async () => {
+  const chrome = await createChromeHarness();
+  const socket = chrome.webSocket();
+
+  socket.listeners.get("ended")({ data: JSON.stringify({ ended_by: "agent" }) });
+
+  assert.equal(chrome.element("endedOverlay").hidden, false);
+  assert.equal(socket.readyState, 3);
+  chrome.runTimers(500);
+  chrome.runTimers(1000);
+  chrome.runTimers(5000);
+  assert.equal(chrome.webSocketCount(), 1);
+});
+
+test("a chrome booted on an ended session keeps no live WebSocket", async () => {
+  const chrome = await createChromeHarness({
+    sessionData: { ...defaultSessionData, initialEnded: true, initialEndedBy: "agent" },
+  });
+
+  assert.equal(chrome.element("endedOverlay").hidden, false);
+  assert.equal(chrome.webSocket().readyState, 3);
+  chrome.runTimers(5000);
+  assert.equal(chrome.webSocketCount(), 1);
 });
 
 test("a reconnect's stale initial sync cannot erase a newer reply", async () => {
