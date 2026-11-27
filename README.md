@@ -159,6 +159,7 @@ pnpm link
 ```
 
 - **File-path identity** - Sessions are keyed by the canonical HTML file path, so agents do not need opaque IDs.
+- **Session directory** - Opening the server root (for example `http://127.0.0.1:4387/`) from this machine lists your open sessions, and the review page's top bar has a switcher for moving between them. Each session is labelled by its parent directory and file name. Requests from other hosts, such as a Tailscale peer, or carrying proxy forwarding headers see no list. Listing a session grants no access to it.
 - **Portable artifacts** - The artifact runs in a sandboxed iframe while Lavish injects a small SDK for annotations, snapshots, feedback controls, and render-time layout checks.
   Author-defined links and popups can open in top-level tabs, while artifact documents remain sandboxed without same-origin access.
   Lavish does not inject any design system, so the saved HTML file renders identically whether you open it through `lavish-axi` or directly in a browser.
