@@ -5849,28 +5849,32 @@ test("chrome send and end carries the end intent with queued prompts", async () 
   assert.equal(chrome.element("chatInput").disabled, true);
 });
 
-test("chrome send and end with an empty composer nudges instead of ending", async () => {
+test("chrome send and end with an empty composer accepts the review and ends", async () => {
   const posts = [];
   const chrome = await createChromeHarness({
     fetchImpl: async (url, init = {}) => {
       posts.push({ url, body: init.body ? JSON.parse(init.body) : null });
-      return { ok: true };
+      return { ok: true, status: 200, json: async () => ({}) };
     },
   });
-  chrome.element("sendHint").hidden = true;
 
-  chrome.element("sendAndEnd").onclick();
+  chrome.element("sendAndEnd").click();
+  chrome.sendSnapshot("");
+  await flushPromises();
   await flushPromises();
 
-  assert.equal(posts.length, 0);
-  assert.equal(chrome.postedToFrame.length, 0);
-  assert.equal(chrome.element("sendHint").hidden, false);
-  assert.match(chrome.element("sendHint").textContent, /End session/);
-  assert.equal(chrome.element("chatInput").focused, true);
-  assert.equal(chrome.element("chatInput").disabled, false);
+  const submitted = posts.filter((post) => String(post.url).endsWith("/prompts"));
+  assert.equal(submitted.length, 1);
+  assert.equal(submitted[0].body.endSession, true);
+  assert.equal(submitted[0].body.prompts.length, 1);
+  assert.equal(submitted[0].body.prompts[0].prompt, "Review accepted. No comments.");
+  assert.deepEqual(publicPostedBody(submitted[0].body).prompts, [
+    { uid: "", prompt: "Review accepted. No comments.", selector: "", tag: "message", text: "Freeform message" },
+  ]);
+  assert.equal(chrome.element("chatInput").disabled, true);
 });
 
-test("chrome send and end nudges toward End session when preparation leaves the queue empty", async () => {
+test("chrome send and end accepts the review when preparation leaves the queue empty", async () => {
   const posts = [];
   let finishPreparation = () => {};
   const preparation = new Promise((resolve) => {
@@ -5895,15 +5899,142 @@ test("chrome send and end nudges toward End session when preparation leaves the 
   chrome.element("sendAndEnd").click();
   finishPreparation();
   await flushPromises();
+  chrome.sendSnapshot("");
+  await flushPromises();
+  await flushPromises();
+
+  const submitted = posts.filter((post) => String(post.url).endsWith("/prompts"));
+  assert.equal(submitted.length, 1);
+  assert.equal(submitted[0].body.endSession, true);
+  assert.equal(submitted[0].body.prompts[0].prompt, "Review accepted. No comments.");
+  assert.deepEqual(publicPostedBody(submitted[0].body).prompts, [
+    { uid: "", prompt: "Review accepted. No comments.", selector: "", tag: "message", text: "Freeform message" },
+  ]);
+});
+
+test("a rejected empty Send & End leaves no acceptance for the reviewer's next message", async () => {
+  const posts = [];
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url, init = {}) => {
+      if (String(url).endsWith("/prompts")) {
+        posts.push(JSON.parse(init.body));
+        if (posts.length === 1) {
+          return {
+            ok: false,
+            status: 409,
+            json: async () => ({ warnings: [warningPayload({ status: "recurring", status_label: "Still present" })] }),
+          };
+        }
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    },
+  });
+
+  chrome.element("sendAndEnd").click();
+  chrome.sendSnapshot("");
+  await flushPromises();
+
+  assert.deepEqual(publicQueued(chrome), []);
+  assert.equal(chrome.element("sendAndEnd").disabled, false);
+  assert.equal(chrome.element("sendHint").classList.contains("persistent"), true);
+  assert.match(chrome.element("sendHint").textContent, /nothing was sent/i);
+  assert.doesNotMatch(chrome.element("sendHint").textContent, /still queued/i);
+
+  chrome.element("chatInput").value = "Fix the header";
+  chrome.element("send").click();
+  chrome.sendSnapshot("");
+  await flushPromises();
+  await flushPromises();
+
+  assert.equal(posts.length, 2);
+  assert.deepEqual(
+    posts[1].prompts.map((prompt) => prompt.prompt),
+    ["Fix the header"],
+    "the synthesized acceptance must not ride along with the next message",
+  );
+  assert.equal(posts[1].endSession, undefined);
+  assert.doesNotMatch(chrome.element("sendHint").textContent, /nothing was sent/i);
+  assert.equal(chrome.element("sendHint").classList.contains("persistent"), false);
+});
+
+for (const status of [413, 400]) {
+  test(`a rejected empty Send & End shows no failure hint once the session already ended (HTTP ${status})`, async () => {
+    /** @type {(value?: unknown) => void} */
+    let answerPost = () => {};
+    const posts = [];
+    const chrome = await createChromeHarness({
+      fetchImpl: async (url, init = {}) => {
+        if (String(url).endsWith("/prompts")) {
+          posts.push(JSON.parse(init.body));
+          await new Promise((resolve) => {
+            answerPost = resolve;
+          });
+          return {
+            ok: false,
+            status,
+            json: async () => ({ rejected: [{ reason: "not-found" }], caps: {} }),
+          };
+        }
+        return { ok: true, status: 200, json: async () => ({}) };
+      },
+    });
+    chrome.element("sendHint").hidden = true;
+
+    chrome.element("sendAndEnd").click();
+    chrome.sendSnapshot("");
+    await flushPromises();
+    assert.equal(posts.length, 1);
+
+    chrome.eventSource().listeners.get("ended")({ data: JSON.stringify({ ended_by: "agent" }) });
+    answerPost();
+    await flushPromises();
+    await flushPromises();
+
+    assert.equal(chrome.element("sendHint").hidden, true);
+    assert.equal(chrome.element("sendHint").classList.contains("persistent"), false);
+    assert.doesNotMatch(chrome.element("sendHint").textContent, /nothing was sent|could not send/i);
+    assert.equal(chrome.element("endedOverlay").hidden, false);
+  });
+}
+
+test("an empty Send & End does not accept over a visible layout preparation failure", async () => {
+  let failPreparation = () => {};
+  const preparation = new Promise((_, reject) => {
+    failPreparation = () => reject(new Error("preparation unavailable"));
+  });
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url) => {
+      if (String(url).endsWith("/layout-warnings/queue")) return preparation;
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+  chrome.eventSource().listeners.get("layout-warnings")({
+    data: JSON.stringify({ warnings: [warningPayload()] }),
+  });
+  const [row] = chrome.warningRows();
+  row.children[0].checked = true;
+  row.children[0].dispatch("change");
+
+  chrome.element("warningsQueueButton").click();
+  chrome.element("sendAndEnd").click();
+  failPreparation();
+  await flushPromises();
+  await flushPromises();
+
+  const snapshotRequests = () => chrome.postedToFrame.filter((message) => message.type === "lavish:requestSnapshot");
+  const snapshotRequestsBefore = snapshotRequests().length;
+  chrome.element("sendAndEnd").click();
+  await flushPromises();
   await flushPromises();
 
   assert.equal(
-    posts.some((post) => String(post.url).endsWith("/prompts")),
-    false,
+    snapshotRequests().length,
+    snapshotRequestsBefore,
+    "an empty accept-and-end must not start a terminal submission over the failed layout fixes",
   );
-  assert.equal(chrome.element("sendHint").hidden, false);
-  assert.match(chrome.element("sendHint").textContent, /End session/);
-  assert.equal(chrome.element("sendAndEnd").disabled, false);
+  assert.equal(chrome.queued().length, 0);
+  assert.equal(chrome.element("sendHint").classList.contains("persistent"), true);
+  assert.match(chrome.element("sendHint").textContent, /could not prepare the selected layout fixes/i);
 });
 
 test("an oversized terminal snapshot retries once without optional DOM context", async () => {
