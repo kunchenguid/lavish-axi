@@ -122,6 +122,31 @@ export function linkHost(env = process.env) {
   return env.LAVISH_AXI_LINK_HOST?.trim() || clientHost(env);
 }
 
+// The chrome uses root-absolute routes, so a public URL must be an origin, not a path prefix.
+export function publicOrigin(env = process.env) {
+  const raw = env.LAVISH_AXI_PUBLIC_URL?.trim();
+  if (!raw) return null;
+  let url;
+  try {
+    url = new URL(raw);
+  } catch {
+    // Invalid URLs share the same configuration error below.
+  }
+  if (
+    !url ||
+    !/^https?:\/\/[^/?#\\\s@]+\/?$/i.test(raw) ||
+    url.username ||
+    url.password ||
+    isWildcardHost(url.hostname) ||
+    url.hostname.includes("*")
+  ) {
+    throw new Error(
+      "LAVISH_AXI_PUBLIC_URL must be an http(s) origin such as https://lavish.example.test (no userinfo, path, query, fragment, or wildcard host)",
+    );
+  }
+  return url.origin;
+}
+
 // Extra Host header values the server's DNS-rebinding guard accepts beyond the
 // loopback names and the resolved bind/link host, set via LAVISH_AXI_ALLOWED_HOSTS
 // (whitespace-separated). A lone "*" disables the guard entirely - an explicit
