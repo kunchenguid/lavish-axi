@@ -96,6 +96,7 @@ async function createChromeHarness({
   // chrome's sheet breakpoint, with `setMobile` flipping it the way a resize would. Left off, the
   // window has no matchMedia at all, which is the desktop the other tests run against.
   mobile = false,
+  confirmAnswer = true,
 } = {}) {
   const source = await readFile(sourceUrl, "utf8");
   // Seed sessionStorage before the client boots, to model a tab whose queue was
@@ -122,10 +123,12 @@ async function createChromeHarness({
   const beginRequests = [];
   const artifactBeginRequests = [];
   const focusLog = [];
+  const confirmPrompts = [];
   const clipboardWrites = [];
   let activeElement = null;
   let nextTimerId = 1;
   let reloadCount = 0;
+  const navigations = [];
   let artifactRevision = 0;
 
   function fakeSetTimeout(fn, ms) {
@@ -286,6 +289,9 @@ async function createChromeHarness({
         this.lastAppendedChild = child;
         return child;
       },
+      append(...nodes) {
+        for (const node of nodes) this.appendChild(node);
+      },
       replaceChildren(...next) {
         for (const child of this.children) child.parentElement = null;
         this.children = [];
@@ -361,6 +367,7 @@ async function createChromeHarness({
   element("layoutGateBypass").hidden = true;
   element("shareDialog").hidden = true;
   element("moreMenu").hidden = true;
+  element("sessionsMenu").hidden = true;
   element("warningsDrawer").hidden = true;
   element("revisionsDrawer").hidden = true;
   const whiteboardFrame = element("whiteboardFrame");
@@ -406,6 +413,9 @@ async function createChromeHarness({
       host: "lavish.test",
       reload() {
         reloadCount += 1;
+      },
+      assign(url) {
+        navigations.push(String(url));
       },
     },
     navigator: {
@@ -511,6 +521,10 @@ async function createChromeHarness({
       },
     },
     window: {
+      confirm(message) {
+        confirmPrompts.push(String(message));
+        return confirmAnswer;
+      },
       clearTimeout: fakeClearTimeout,
       setTimeout: fakeSetTimeout,
       addEventListener(type, handler) {
@@ -546,6 +560,7 @@ async function createChromeHarness({
 
   return {
     element,
+    confirmPrompts,
     frame,
     postedToFrame,
     postedToWhiteboard,
@@ -662,6 +677,7 @@ async function createChromeHarness({
     queued() {
       return JSON.parse(storage.get("lavish-axi:queued:abc") || "[]");
     },
+    navigations: () => navigations,
     reloadCount() {
       return reloadCount;
     },
@@ -9442,4 +9458,182 @@ test("a window that is not the artifact frame cannot set the tab", async () => {
     });
   }
   assert.equal(chrome.tab().title, "Plan \u00b7 Lavish");
+});
+
+function sessionsFetch(responses) {
+  return async (url) => {
+    if (String(url) !== "/api/sessions") return { ok: true, json: async () => ({}) };
+    return responses.shift()();
+  };
+}
+
+function sessionLinks(chrome) {
+  return chrome.element("sessionsList").children.filter((node) => node.tagName === "A");
+}
+
+test("a session switcher link asks before dropping an unsent composer message", async () => {
+  for (const [answer, expectPrevented] of [
+    [false, true],
+    [true, false],
+  ]) {
+    const chrome = await createChromeHarness({
+      confirmAnswer: answer,
+      fetchImpl: sessionsFetch([
+        async () => ({
+          ok: true,
+          json: async () => ({ sessions: [{ key: "other", name: "p/o.html", file: "~/p/o.html" }] }),
+        }),
+      ]),
+    });
+    chrome.element("sessionsButton").click();
+    await flushPromises();
+    const [link] = sessionLinks(chrome);
+    chrome.element("chatInput").value = "half-written thought";
+    const event = {
+      defaultPrevented: false,
+      preventDefault() {
+        this.defaultPrevented = true;
+      },
+    };
+    link.dispatch("click", event);
+    assert.equal(chrome.confirmPrompts.length, 1);
+    assert.equal(event.defaultPrevented, expectPrevented);
+  }
+});
+
+test("a session switcher link asks before dropping an image-only draft", async () => {
+  const chrome = await createChromeHarness({
+    confirmAnswer: false,
+    sessionData: { ...defaultSessionData, attachmentMaxBytes: 1024, attachmentMaxCount: 4 },
+    fetchImpl: async (url) =>
+      String(url) === "/api/sessions"
+        ? { ok: true, json: async () => ({ sessions: [{ key: "other", name: "p/o.html", file: "~/p/o.html" }] }) }
+        : { ok: true, json: async () => ({ attachment: { id: "f".repeat(64) + ".png" } }) },
+  });
+  chrome.element("chatAttachInput").files = [pastedImage("picked.png")];
+  chrome.element("chatAttachInput").dispatch("change");
+  await flushPromises();
+  chrome.element("sessionsButton").click();
+  await flushPromises();
+  const event = {
+    defaultPrevented: false,
+    preventDefault() {
+      this.defaultPrevented = true;
+    },
+  };
+  sessionLinks(chrome)[0].dispatch("click", event);
+  assert.equal(chrome.confirmPrompts.length, 1);
+  assert.equal(event.defaultPrevented, true);
+});
+
+test("a session switcher link waits for inline whiteboards to flush before navigating", async () => {
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url) =>
+      String(url) === "/api/sessions"
+        ? { ok: true, json: async () => ({ sessions: [{ key: "other", name: "p/o.html", file: "~/p/o.html" }] }) }
+        : whiteboardFetch(url),
+  });
+  const inline = await initializeInlineWhiteboard(chrome);
+  chrome.element("sessionsButton").click();
+  await flushPromises();
+  const event = {
+    defaultPrevented: false,
+    preventDefault() {
+      this.defaultPrevented = true;
+    },
+  };
+  sessionLinks(chrome)[0].dispatch("click", event);
+  assert.equal(event.defaultPrevented, true);
+  const flush = inline.posted.at(-1);
+  assert.equal(flush.type, "lavish-whiteboard:flush");
+  assert.deepEqual(chrome.navigations(), []);
+
+  chrome.sendInlineWhiteboardMessage(inline, {
+    type: "lavish-whiteboard:flushComplete",
+    diagramIndex: 0,
+    channelId: "inline-channel",
+    flushId: flush.flushId,
+    ok: true,
+  });
+  await flushPromises();
+  assert.deepEqual(chrome.navigations(), ["/session/other"]);
+});
+
+test("a session switcher link opened in a new tab does not wait on whiteboards", async () => {
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url) =>
+      String(url) === "/api/sessions"
+        ? { ok: true, json: async () => ({ sessions: [{ key: "other", name: "p/o.html", file: "~/p/o.html" }] }) }
+        : whiteboardFetch(url),
+  });
+  await initializeInlineWhiteboard(chrome);
+  chrome.element("sessionsButton").click();
+  await flushPromises();
+  const event = {
+    metaKey: true,
+    defaultPrevented: false,
+    preventDefault() {
+      this.defaultPrevented = true;
+    },
+  };
+  sessionLinks(chrome)[0].dispatch("click", event);
+  assert.equal(event.defaultPrevented, false);
+});
+
+test("a session switcher link never prompts when nothing is unsent", async () => {
+  const chrome = await createChromeHarness({
+    confirmAnswer: false,
+    fetchImpl: sessionsFetch([
+      async () => ({
+        ok: true,
+        json: async () => ({ sessions: [{ key: "other", name: "p/o.html", file: "~/p/o.html" }] }),
+      }),
+    ]),
+  });
+  chrome.element("sessionsButton").click();
+  await flushPromises();
+  const event = {
+    defaultPrevented: false,
+    preventDefault() {
+      this.defaultPrevented = true;
+    },
+  };
+  sessionLinks(chrome)[0].dispatch("click", event);
+  assert.equal(chrome.confirmPrompts.length, 0);
+  assert.equal(event.defaultPrevented, false);
+});
+
+test("Escape closes the sessions menu and returns focus to its button", async () => {
+  const chrome = await createChromeHarness({
+    fetchImpl: sessionsFetch([async () => ({ ok: true, json: async () => ({ sessions: [] }) })]),
+  });
+  chrome.element("sessionsButton").click();
+  await flushPromises();
+  assert.equal(chrome.element("sessionsMenu").hidden, false);
+  chrome.dispatchDocumentKeydown({ key: "Escape" });
+  assert.equal(chrome.element("sessionsMenu").hidden, true);
+  assert.equal(chrome.element("sessionsButton").focused, true);
+});
+
+test("only the latest sessions request updates the switcher", async () => {
+  /** @type {() => void} */
+  let releaseOld = () => {};
+  const chrome = await createChromeHarness({
+    fetchImpl: sessionsFetch([
+      () =>
+        new Promise((resolve) => {
+          releaseOld = () =>
+            resolve({ ok: true, json: async () => ({ sessions: [{ key: "old", name: "old", file: "old" }] }) });
+        }),
+      async () => ({ ok: true, json: async () => ({ sessions: [{ key: "new", name: "new", file: "new" }] }) }),
+    ]),
+  });
+  chrome.element("sessionsButton").click();
+  chrome.element("sessionsButton").click();
+  chrome.element("sessionsButton").click();
+  await flushPromises();
+  releaseOld();
+  await flushPromises();
+  const hrefs = sessionLinks(chrome).map((link) => link.href);
+  assert.deepEqual(hrefs, ["/session/new"]);
 });
