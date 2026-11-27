@@ -244,6 +244,7 @@ pnpm link
   Whiteboard scenes autosave locally.
   If a live reload changes the Mermaid source, an unmodified whiteboard silently re-converts to the new diagram. If the reviewer had edited the scene, reopening it lets them re-convert and discard the saved edits or keep editing the saved scene.
   Use **Queue feedback** to add a bounded edit summary plus local `.excalidraw` scene and PNG preview paths to the Conversation panel, then click **Send to Agent** to deliver it.
+  The summary locates added items and freehand marks by labeled nodes or sections when available; without a labeled shape, it uses coordinates. Queuing feedback for the same diagram again before sending keeps the earlier unsent note, including edits made in the Conversation panel.
   The agent updates the artifact's Mermaid source, which remains authoritative.
   Flowchart, sequence, class, ER, and state diagrams convert to editable shapes; other diagram types are images that reviewers can draw and annotate.
   Lavish changes only the browser view, so saved, standalone, and exported artifacts still render plain Mermaid.

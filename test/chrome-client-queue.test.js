@@ -6344,6 +6344,80 @@ test("Send & End waits for whiteboard feedback preparation already in flight", a
   assert.equal(whiteboard.posted.at(-1).ok, true);
 });
 
+test("re-queueing a whiteboard keeps the earlier unsent note", async () => {
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url) => {
+      if (String(url).includes("/whiteboard-channel") || String(url).includes("/mermaid-sources")) {
+        return whiteboardFetch(url);
+      }
+      if (String(url).endsWith("/whiteboard/0/feedback-files")) {
+        return {
+          ok: true,
+          json: async () => ({ scene_path: "/tmp/review.excalidraw", preview_path: "/tmp/review.png" }),
+        };
+      }
+      return { ok: true, json: async () => ({ whiteboard: null }) };
+    },
+  });
+  const whiteboard = await initializeInlineWhiteboard(chrome);
+  const queueNote = async (note, summaryLines) => {
+    chrome.sendInlineWhiteboardMessage(whiteboard, {
+      type: "lavish-whiteboard:queueFeedback",
+      diagramIndex: 0,
+      channelId: "inline-channel",
+      note,
+      summaryLines,
+      sourceHash: "hash",
+      scene: { elements: [], appState: {}, files: {} },
+      pngDataUrl: "data:image/png;base64,AA==",
+    });
+    await flushPromises();
+    await flushPromises();
+  };
+
+  await queueNote("Frontend: bump font size", ["Added text A"]);
+  await queueNote("Backend: add a cache", ["Added text A", "Added text B"]);
+  await queueNote("Backend: add a cache", ["Added text A", "Added text B"]);
+
+  const queued = chrome.queued();
+  assert.equal(queued.length, 1);
+  assert.match(
+    queued[0].prompt,
+    /^Frontend: bump font size\n\nBackend: add a cache\n\nWhiteboard edits to diagram 1 \(mermaid-1\):\nAdded text A\nAdded text B\n/,
+  );
+
+  await queueNote("For Whiteboard edits to diagram 1, keep the cache", ["Added text A"]);
+  await queueNote("Also check the SDK", ["Added text A"]);
+  assert.match(
+    chrome.queued()[0].prompt,
+    /^Frontend: bump font size\n\nBackend: add a cache\n\nFor Whiteboard edits to diagram 1, keep the cache\n\nAlso check the SDK\n\nWhiteboard edits to diagram 1 /,
+  );
+
+  // A correction saved in the queued bubble survives the next re-queue.
+  const generated = chrome.queued()[0].prompt.slice(chrome.queued()[0].prompt.lastIndexOf("Whiteboard edits"));
+  chrome.element("queuedLog").dispatch("click", { target: queuedLogNode(["bubble", "queued"], 0) });
+  typeIntoQueuedEdit(chrome, "Backend: do not add a cache\n\n" + generated);
+  chrome.element("queuedLog").dispatch("click", { target: queuedLogNode(["queued-edit-save"], 0) });
+  await queueNote("Rename the SDK", ["Added text A"]);
+  assert.match(
+    chrome.queued()[0].prompt,
+    /^Backend: do not add a cache\n\nRename the SDK\n\nWhiteboard edits to diagram 1 \(mermaid-1\):\nAdded text A\n/,
+  );
+
+  // Saving twice with an extra blank line before the heading keeps the old heading out of the note.
+  const regenerated = chrome.queued()[0].prompt.slice(chrome.queued()[0].prompt.lastIndexOf("Whiteboard edits"));
+  for (let save = 0; save < 2; save += 1) {
+    chrome.element("queuedLog").dispatch("click", { target: queuedLogNode(["bubble", "queued"], 0) });
+    typeIntoQueuedEdit(chrome, "Spaced note\n\n\n" + regenerated);
+    chrome.element("queuedLog").dispatch("click", { target: queuedLogNode(["queued-edit-save"], 0) });
+  }
+  await queueNote("Last note", ["Added text A"]);
+  assert.match(
+    chrome.queued()[0].prompt,
+    /^Spaced note\n\nLast note\n\nWhiteboard edits to diagram 1 \(mermaid-1\):\nAdded text A\n/,
+  );
+});
+
 test("artifact relays cannot invoke whiteboard persistence", async () => {
   const calls = [];
   const chrome = await createChromeHarness({
@@ -9442,4 +9516,44 @@ test("a window that is not the artifact frame cannot set the tab", async () => {
     });
   }
   assert.equal(chrome.tab().title, "Plan \u00b7 Lavish");
+});
+
+test("re-queueing a whiteboard keeps a note that only contains the earlier one", async () => {
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url) => {
+      if (String(url).includes("/whiteboard-channel") || String(url).includes("/mermaid-sources")) {
+        return whiteboardFetch(url);
+      }
+      if (String(url).endsWith("/whiteboard/0/feedback-files")) {
+        return { ok: true, json: async () => ({ scene_path: "/tmp/review.excalidraw", preview_path: "" }) };
+      }
+      return { ok: true, json: async () => ({ whiteboard: null }) };
+    },
+  });
+  const whiteboard = await initializeInlineWhiteboard(chrome);
+  const queueNote = async (note) => {
+    chrome.sendInlineWhiteboardMessage(whiteboard, {
+      type: "lavish-whiteboard:queueFeedback",
+      diagramIndex: 0,
+      channelId: "inline-channel",
+      note,
+      summaryLines: ["Added text A"],
+      sourceHash: "hash",
+      scene: { elements: [], appState: {}, files: {} },
+      pngDataUrl: "data:image/png;base64,AA==",
+    });
+    await flushPromises();
+    await flushPromises();
+  };
+
+  await queueNote("approve this");
+  await queueNote("disapprove this");
+  assert.match(chrome.queued()[0].prompt, /^approve this\n\ndisapprove this\n\nWhiteboard edits to diagram 1 /);
+
+  await queueNote("approve");
+  await queueNote("");
+  assert.match(
+    chrome.queued()[0].prompt,
+    /^approve this\n\ndisapprove this\n\napprove\n\nWhiteboard edits to diagram 1 /,
+  );
 });

@@ -750,6 +750,57 @@ function clampLine(line) {
   return truncate(line, SUMMARY_MAX_LINE_CHARS);
 }
 
+function isSubgraph(el) {
+  return Array.isArray(el.groupIds) && el.groupIds.includes(`subgraph_group_${el.id}`);
+}
+
+// Where an added item sits, in Mermaid terms: the labeled shapes whose box holds
+// its center, innermost first, then the nearest other labeled shape when the
+// innermost box is a subgraph or nothing holds the item. A scene with no labeled
+// shape to name falls back to the item's top-left coordinates.
+/**
+ * @param {number[]} box
+ * @param {(other: any) => boolean} isSelf
+ * @param {any[]} elements
+ * @param {Map<string, string>} boundText
+ */
+function locationOf(box, isSelf, elements, boundText) {
+  const [minX, minY, maxX, maxY] = box;
+  const cx = (minX + maxX) / 2;
+  const cy = (minY + maxY) / 2;
+  const shapes = elements
+    .filter((other) => !isSelf(other) && isNodeLabelContainer(other) && elementLabel(other, boundText))
+    .map((other) => ({ other, box: elementBounds(other) }));
+  const name = (other) => `"${truncate(elementLabel(other, boundText), 40)}" (${other.id})`;
+  const area = (/** @type {number[]} */ b) => (b[2] - b[0]) * (b[3] - b[1]);
+  const holders = shapes
+    .filter(({ box }) => cx >= box[0] && cx <= box[2] && cy >= box[1] && cy <= box[3])
+    .sort((a, b) => area(a.box) - area(b.box));
+  let where = holders.map(({ other }, i) => ` ${i ? "in" : "inside"} ${name(other)}`).join("");
+  if (!holders.length || isSubgraph(holders[0].other)) {
+    const sectionBox = holders.length ? holders[0].box : null;
+    let nearest = null;
+    let best = Infinity;
+    for (const { other, box } of shapes) {
+      if (holders.some((holder) => holder.other === other)) continue;
+      const otherCx = (box[0] + box[2]) / 2;
+      const otherCy = (box[1] + box[3]) / 2;
+      if (
+        sectionBox &&
+        (otherCx < sectionBox[0] || otherCx > sectionBox[2] || otherCy < sectionBox[1] || otherCy > sectionBox[3])
+      )
+        continue;
+      const distance = Math.hypot(Math.max(box[0] - cx, 0, cx - box[2]), Math.max(box[1] - cy, 0, cy - box[3]));
+      if (distance < best) {
+        best = distance;
+        nearest = other;
+      }
+    }
+    if (nearest) where += `${where ? "," : ""} near ${name(nearest)}`;
+  }
+  return where || ` near (${Math.round(minX)}, ${Math.round(minY)})`;
+}
+
 function arrowEndpoints(el, elementsMap, boundText) {
   const start = el.startBinding?.elementId ? elementsMap.get(el.startBinding.elementId) : null;
   const end = el.endBinding?.elementId ? elementsMap.get(el.endBinding.elementId) : null;
@@ -779,13 +830,18 @@ export function summarizeSceneEdits(baselineElements, editedElements, { maxLines
   for (const el of edited) {
     if (baselineMap.has(el.id)) continue;
     if (libraryRefOf(el)) {
-      const [minX, minY] = elementBounds(el);
-      const entry = addedItems.get(libraryGroupKey(el));
+      const [minX, minY, maxX, maxY] = elementBounds(el);
+      const key = libraryGroupKey(el);
+      const entry = addedItems.get(key);
       if (entry) {
-        entry.x = Math.min(entry.x, minX);
-        entry.y = Math.min(entry.y, minY);
+        entry.box = [
+          Math.min(entry.box[0], minX),
+          Math.min(entry.box[1], minY),
+          Math.max(entry.box[2], maxX),
+          Math.max(entry.box[3], maxY),
+        ];
       } else {
-        addedItems.set(libraryGroupKey(el), { ref: libraryRefOf(el), x: minX, y: minY });
+        addedItems.set(key, { ref: libraryRefOf(el), box: [minX, minY, maxX, maxY] });
       }
       continue;
     }
@@ -795,17 +851,20 @@ export function summarizeSceneEdits(baselineElements, editedElements, { maxLines
     }
     if (el.type === "freedraw") {
       stats.drawn += 1;
-      lines.push(clampLine(`Drew a freehand mark near (${Math.round(el.x)}, ${Math.round(el.y)})`));
+      const where = locationOf(elementBounds(el), (other) => other === el, edited, editedText);
+      lines.push(clampLine(`Drew a freehand mark${where}`));
       continue;
     }
     stats.added += 1;
     const endpoints = el.type === "arrow" || el.type === "line" ? arrowEndpoints(el, editedMap, editedText) : "";
-    lines.push(clampLine(`Added ${describeElement(el, editedText)}${endpoints}`));
+    const where = endpoints || locationOf(elementBounds(el), (other) => other === el, edited, editedText);
+    lines.push(clampLine(`Added ${describeElement(el, editedText)}${where}`));
   }
 
-  for (const { ref, x, y } of addedItems.values()) {
+  for (const [key, { ref, box }] of addedItems) {
     stats.added += 1;
-    lines.push(clampLine(`Added library item ${ref} near (${Math.round(x)}, ${Math.round(y)})`));
+    const where = locationOf(box, (other) => libraryRefOf(other) && libraryGroupKey(other) === key, edited, editedText);
+    lines.push(clampLine(`Added library item ${ref}${where}`));
   }
 
   for (const el of baseline) {
